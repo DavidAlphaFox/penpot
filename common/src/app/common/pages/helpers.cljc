@@ -9,7 +9,7 @@
    [app.common.data :as d]
    [app.common.geom.shapes :as gsh]
    [app.common.spec :as us]
-   [app.common.types.interactions :as cti]
+   [app.common.spec.interactions :as cti]
    [app.common.uuid :as uuid]
    [cuerdas.core :as str]))
 
@@ -231,13 +231,14 @@
      (reduce lookup-shapes [] root-children))))
 
 (defn select-frames
-  [objects]
-  (let [lookup #(get objects %)
-        frame? #(= :frame (:type %))
-        xform  (comp (map lookup)
-                     (filter frame?))]
-    (->> (:shapes (lookup uuid/zero))
-         (into [] xform))))
+  ([objects] (select-frames objects []))
+  ([objects initial]
+   (let [lookup #(get objects %)
+         frame? #(= :frame (:type %))
+         xform  (comp (map lookup)
+                      (filter frame?))]
+     (->> (:shapes (lookup uuid/zero))
+          (into initial xform)))))
 
 (defn clone-object
   "Gets a copy of the object and all its children, with new ids
@@ -464,3 +465,4 @@
     (tree-seq #(d/not-empty? (get shape :shapes))
               #(->> (get % :shapes) (map getter))
               shape)))
+
