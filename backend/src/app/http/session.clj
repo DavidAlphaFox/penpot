@@ -21,7 +21,8 @@
 
 ;; A default cookie name for storing the session. We don't allow
 ;; configure it.
-(def cookie-name "auth-token")
+(def token-cookie-name "auth-token")
+(def authenticated-cookie-name "authenticated")
 
 ;; --- IMPL
 
@@ -37,7 +38,7 @@
 
 (defn- delete-session
   [{:keys [conn] :as cfg} {:keys [cookies] :as request}]
-  (when-let [token (get-in cookies [cookie-name :value])]
+  (when-let [token (get-in cookies [token-cookie-name :value])]
     (db/delete! conn :http-session {:id token}))
   nil)
 
@@ -48,22 +49,34 @@
 
 (defn- retrieve-from-request
   [cfg {:keys [cookies] :as request}]
-  (->> (get-in cookies [cookie-name :value])
+  (->> (get-in cookies [token-cookie-name :value])
        (retrieve-session cfg)))
 
 (defn- add-cookies
   [response {:keys [id] :as session}]
   (let [cors?   (contains? cfg/flags :cors)
-        secure? (contains? cfg/flags :secure-session-cookies)]
-    (assoc response :cookies {cookie-name {:path "/"
-                                           :http-only true
-                                           :value id
-                                           :same-site (if cors? :none :lax)
-                                           :secure secure?}})))
+        secure? (contains? cfg/flags :secure-session-cookies)
+        authenticated-cookie-domain (cfg/get :authenticated-cookie-domain)]
+    (update response :cookies
+            (fn [cookies]
+              (cond-> cookies
+                :always
+                (assoc token-cookie-name {:path "/"
+                                          :http-only true
+                                          :value id
+                                          :same-site (if cors? :none :lax)
+                                          :secure secure?})
+
+                (some? authenticated-cookie-domain)
+                (assoc authenticated-cookie-name {:domain authenticated-cookie-domain
+                                                  :value true
+                                                  :same-site :strict
+                                                  :secure true}))))))
 
 (defn- clear-cookies
   [response]
-  (assoc response :cookies {cookie-name {:value "" :max-age -1}}))
+  (assoc response :cookies {token-cookie-name {:value "" :max-age -1}
+                            authenticated-cookie-name {:value "" :max-age -1}}))
 
 (defn- middleware
   [cfg handler]
