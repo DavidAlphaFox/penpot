@@ -10,10 +10,7 @@
   background-color: $color-gray-50;
   border-top: 1px solid $color-gray-60;
   display: flex;
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  width: 100%;
+  
   z-index: 11;
 
   & .right-arrow,
@@ -44,11 +41,6 @@
 
   &.fade-out-down {
     @include animation(0, 0.5s, fadeOutDown);
-  }
-
-  &.left-sidebar-open {
-    left: 303px;
-    width: calc(100% - 303px);
   }
 
   & .context-menu-items {
@@ -119,7 +111,6 @@
   display: flex;
   overflow: hidden;
   width: 100%;
-  height: 5rem;
   padding: 0.25rem;
 
   &.size-small {

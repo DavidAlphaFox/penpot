@@ -481,7 +481,7 @@
               (cond
                 (or (not (mth/finite? (:width srect)))
                     (not (mth/finite? (:height srect))))
-                (assoc local :vbox (assoc size :x 0 :y 0 :left-offset 0))
+                (assoc local :vbox (assoc size :x 0 :y 0))
 
                 (or (> (:width srect) width)
                     (> (:height srect) height))
@@ -533,14 +533,14 @@
                   local
                   (let [wprop (/ (:width vport) width)
                         hprop (/ (:height vport) height)
-                        left-offset (if left-sidebar? 0 (/ (* -1 15 16) zoom))]
+                        ]
                     (-> local         ;; This matches $width-settings-bar
                         (assoc :vport size) ;; in frontend/resources/styles/main/partials/sidebar.scss
                         (update :vbox (fn [vbox]
                                         (-> vbox
                                             (update :width #(/ % wprop))
                                             (update :height #(/ % hprop))
-                                            (assoc :left-offset left-offset))))))))))))
+                                            )))))))))))
 
 (defn start-panning []
   (ptk/reify ::start-panning
@@ -596,14 +596,13 @@
 
 (defn- impl-update-zoom
   [{:keys [vbox] :as local} center zoom]
-  (let [vbox (update vbox :x + (:left-offset vbox))
-        new-zoom (if (fn? zoom) (zoom (:zoom local)) zoom)
+  (let [new-zoom (if (fn? zoom) (zoom (:zoom local)) zoom)
         old-zoom (:zoom local)
         center (if center center (gsh/center-rect vbox))
         scale (/ old-zoom new-zoom)
         mtx  (gmt/scale-matrix (gpt/point scale) center)
         vbox' (gsh/transform-rect vbox mtx)
-        vbox' (update vbox' :x - (:left-offset vbox))]
+        ]
     (-> local
         (assoc :zoom new-zoom)
         (update :vbox merge (select-keys vbox' [:x :y :width :height])))))

@@ -111,7 +111,7 @@
         (fn []
           (events/unlistenByKey key1))))
 
-    [:div.color-palette.left-sidebar-open
+    [:div.color-palette
      [:& dropdown {:show (:show-menu @state)
                    :on-close #(swap! state assoc :show-menu false)}
       [:ul.workspace-context-menu.palette-menu

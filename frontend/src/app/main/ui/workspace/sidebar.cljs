@@ -22,6 +22,7 @@
   {:wrap [mf/memo]}
   [{:keys [layout ] :as props}]
   [:aside.settings-bar.settings-bar-left
+   [:div.resize-area]
    [:div.settings-bar-inside
     {:data-layout (str/join "," layout)}
     (when (contains? layout :layers)
@@ -42,7 +43,8 @@
    ::mf/wrap [mf/memo]}
   [props]
   (let [drawing-tool (:tool (mf/deref refs/workspace-drawing))]
-    [:aside.settings-bar
+    [:aside.settings-bar.settings-bar-right
+     [:div.resize-area]
      [:div.settings-bar-inside
       (if (= drawing-tool :comments)
         [:& comments-sidebar]
