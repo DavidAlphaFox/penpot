@@ -110,7 +110,8 @@
                   (if-not sub-options
                     [:a.context-menu-action {:on-click #(do (dom/stop-propagation %)
                                                             (on-close)
-                                                            (option-handler %))}
+                                                            (option-handler %))
+                                             :data-e2e option-name}
                      (if (and in-dashboard? (= option-name "Default"))
                        (tr "dashboard.default-team-name")
                        option-name)]

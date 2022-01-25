@@ -88,5 +88,11 @@ Cypress.Commands.add('clickMultiInViewport', (coords) => {
 Cypress.Commands.add('clearViewport', () => {
    cy.get(".viewport-controls").type('{ctrl}a');
    cy.get(".viewport-controls").type('{del}');
-   cy.window().its("debug").invoke('reset_viewport')
+   cy.window().its("debug").invoke('reset_viewport');
+})
+
+Cypress.Commands.add('deleteFirstProject', () => {
+   cy.get('.project').first().find("[data-e2e=project-options]").click();
+   cy.get('.project').first().find("[data-e2e=Delete]").click();
+   cy.get('.accept-button').click();      
 })

@@ -14,8 +14,8 @@ describe("demo account", () => {
   });
 
   it.only("create demo account", () => {
-    cy.get("a").contains("Create demo account").click()    
-    cy.get(".profile").contains("Demo User")
+    cy.get("a").contains("Create demo account").click();    
+    cy.get(".profile").contains("Demo User");
   });
 
 });

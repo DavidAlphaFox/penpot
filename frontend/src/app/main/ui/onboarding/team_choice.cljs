@@ -46,11 +46,11 @@
        [:p (tr "onboarding.welcome.desc3")]]
       [:div.modal-columns
        [:div.modal-left
-        [:div.content-button {:on-click on-fly-solo}
+        [:div.content-button {:on-click on-fly-solo :data-e2e "fly-solo-button"}
          [:h2 (tr "onboarding.choice.fly-solo")]
          [:p (tr "onboarding.choice.fly-solo-desc")]]]
        [:div.modal-right
-        [:div.content-button {:on-click on-team-up}
+        [:div.content-button {:on-click on-team-up :data-e2e "team-up-button"}
          [:h2 (tr "onboarding.choice.team-up")]
          [:p (tr "onboarding.choice.team-up-desc")]]]]
       [:img.deco {:src "images/deco-left.png" :border "0"}]

@@ -29,7 +29,7 @@
      [:div.dashboard-title
       [:h1 (tr "dashboard.projects-title")]]
 
-     [:a.btn-secondary.btn-small {:on-click create}
+     [:a.btn-secondary.btn-small {:on-click create :data-e2e "new-project-button"}
       (tr "dashboard.new-project")]]))
 
 (mf/defc project-item
@@ -141,7 +141,7 @@
        i/close]
 
       [:a.btn-secondary.btn-small.tooltip.tooltip-bottom
-       {:on-click on-menu-click :alt (tr "dashboard.options")}
+       {:on-click on-menu-click :alt (tr "dashboard.options") :data-e2e "project-options"}
        i/actions]]
 
      [:& line-grid
