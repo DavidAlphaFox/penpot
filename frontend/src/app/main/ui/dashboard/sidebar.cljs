@@ -501,25 +501,30 @@
              (st/emit! section))))]
 
     [:div.profile-section
-     [:div.profile {:on-click #(reset! show true)}
+     [:div.profile {:on-click #(reset! show true)
+                    :data-e2e "profile-btn"}
       [:img {:src photo}]
       [:span (:fullname profile)]
 
      [:& dropdown {:on-close #(reset! show false)
                    :show @show}
       [:ul.dropdown
-       [:li {:on-click (partial on-click :settings-profile)}
+       [:li {:on-click (partial on-click :settings-profile)
+             :data-e2e "profile-profile-opt"}
         [:span.icon i/user]
         [:span.text (tr "labels.profile")]]
-       [:li {:on-click (partial on-click :settings-password)}
+       [:li {:on-click (partial on-click :settings-password)
+              :data-e2e "password-profile-opt"}
         [:span.icon i/lock]
         [:span.text (tr "labels.password")]]
-       [:li {:on-click #(on-click (du/logout) %)}
+       [:li {:on-click #(on-click (du/logout) %)
+              :data-e2e "logout-profile-opt"}
         [:span.icon i/exit]
         [:span.text (tr "labels.logout")]]
 
        (when (contains? @cf/flags :user-feedback)
-         [:li.feedback {:on-click (partial on-click :settings-feedback)}
+         [:li.feedback {:on-click (partial on-click :settings-feedback)
+                         :data-e2e "feedback-profile-opt"}
           [:span.icon i/msg-info]
           [:span.text (tr "labels.give-feedback")]
           ])]]]

@@ -149,7 +149,7 @@
   [{:keys [params] :as props}]
   [:div.generic-form.login-form
    [:div.form-container
-    [:h1 (tr "auth.login-title")]
+    [:h1 {:data-e2e "login-title"} (tr "auth.login-title")]
     [:div.subtitle (tr "auth.login-subtitle")]
 
     [:& login-form {:params params}]
@@ -169,7 +169,8 @@
      (when (contains? @cf/flags :registration)
        [:div.link-entry
         [:span (tr "auth.register") " "]
-        [:a {:on-click #(st/emit! (rt/nav :auth-register {} params))}
+        [:a {:on-click #(st/emit! (rt/nav :auth-register {} params))
+             :data-e2e "register-submit"}
          (tr "auth.register-submit")]])]
 
     (when (contains? @cf/flags :demo-users)

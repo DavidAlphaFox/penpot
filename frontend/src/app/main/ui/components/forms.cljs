@@ -170,7 +170,7 @@
         [:span.hint hint])]]))
 
 (mf/defc select
-  [{:keys [options label form default] :as props
+  [{:keys [options label form default data-e2e] :as props
     :or {default ""}}]
   (let [input-name (get props :name)
 
@@ -181,7 +181,8 @@
 
     [:div.custom-select
      [:select {:value value
-               :on-change on-change}
+               :on-change on-change
+               :data-e2e (or data-e2e "")}
       (for [item options]
         [:option {:key (:value item) :value (:value item)} (:label item)])]
 
@@ -194,7 +195,7 @@
        i/arrow-slide]]]))
 
 (mf/defc submit-button
-  [{:keys [label form on-click disabled] :as props}]
+  [{:keys [label form on-click disabled data-e2e] :as props}]
   (let [form (or form (mf/use-ctx form-ctx))]
     [:input.btn-primary.btn-large
      {:name "submit"
@@ -202,6 +203,7 @@
       :disabled (or (not (:valid @form)) (true? disabled))
       :on-click on-click
       :value label
+      :data-e2e (or data-e2e  "")
       :type "submit"}]))
 
 (mf/defc form
