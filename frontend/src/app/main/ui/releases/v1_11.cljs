@@ -39,16 +39,16 @@
          [:img {:src "images/features/advanced-proto.gif" :border "0" :alt "Advanced interactions"}]]
         [:div.modal-right
          [:div.modal-title
-          [:h2 "Prototyping triggers and actions"]]
+          [:h2 "Prototype animations"]]
          [:div.modal-content
-          [:p "Prototyping options at last! Different triggers (like mouse events or time delays) and actions allow you to add complexity to the interactions of your prototypes."]
-          [:p "Create overlays, back buttons or links to URLs to mimic the behavior of the product you’re designing."]]
+          [:p "Bring your prototypes to life with animations! With animations now you can define the transition between artboards when an interaction is triggered."]
+          [:p "Use dissolve, slide and push animations to fade screens and imitate gestures like swipe."]]
          [:div.modal-navigation
           [:button.btn-secondary {:on-click next} "Continue"]
           [:& c/navigation-bullets
            {:slide @slide
             :navigate navigate
-            :total 4}]]]]]]
+            :total 3}]]]]]]
 
      1
      [:div.modal-overlay
@@ -58,37 +58,18 @@
          [:img {:src "images/features/flows-proto.gif" :border "0" :alt "Multiple flows"}]]
         [:div.modal-right
          [:div.modal-title
-          [:h2 "Multiple flows"]]
+          [:h2 "Ignore artboard background on export"]]
          [:div.modal-content
-          [:p "Design projects usually need to define multiple casuistics for different devices and user journeys."]
-          [:p "Flows allow you to define multiple starting points within the same page so you can better organize and present your prototypes."]]
+          [:p "Sometimes you don’t need the artboards to be part of your designs, but only their support to work on them."]
+          [:p "Now you can decide to include their backgrounds on your exports or leave them out."]]
          [:div.modal-navigation
           [:button.btn-secondary {:on-click next} "Continue"]
           [:& c/navigation-bullets
            {:slide @slide
             :navigate navigate
-            :total 4}]]]]]]
+            :total 3}]]]]]]
 
      2
-     [:div.modal-overlay
-      [:div.animated {:class @klass}
-       [:div.modal-container.onboarding.feature
-        [:div.modal-left
-         [:img {:src "images/features/booleans.gif" :border "0" :alt "Boolean shapes"}]]
-        [:div.modal-right
-         [:div.modal-title
-          [:h2 "Boolean operations"]]
-         [:div.modal-content
-          [:p "Now in Penpot you can combine shapes in different ways. There are five options: Union, difference, intersection, exclusion and flatten."]
-          [:p "Using boolean operations will lead to countless graphic possibilities for your designs."]]
-         [:div.modal-navigation
-          [:button.btn-secondary {:on-click next} "Continue"]
-          [:& c/navigation-bullets
-           {:slide @slide
-            :navigate navigate
-            :total 4}]]]]]]
-
-     3
      [:div.modal-overlay
       [:div.animated {:class @klass}
        [:div.modal-container.onboarding.feature
@@ -96,13 +77,13 @@
          [:img {:src "images/features/libraries-feature.gif" :border "0" :alt "Libraries & templates"}]]
         [:div.modal-right
          [:div.modal-title
-          [:h2 "Libraries & templates"]]
+          [:h2 "New zoom widget"]]
          [:div.modal-content
-          [:p "We’ve created a new space on Penpot where you can share your libraries and templates and download the ones you like.   Material Design, Cocomaterial or Penpot’s Design System are among them (and a lot more to come!)."]
-          [:p [:a {:alt "Explore libraries & templates" :target "_blank" :href "https://penpot.app/libraries-templates.html"} "Explore libraries & templates"]]]
+          [:p "We’ve redesigned zooming menus to improve their usability and the consistency between zooming in the design workspace and in the view mode."]
+          [:p "We’ve also added two new options to scale your designs at the view mode that might help you to make your presentations look better."]]
          [:div.modal-navigation
           [:button.btn-secondary {:on-click finish} "Start!"]
           [:& c/navigation-bullets
            {:slide @slide
             :navigate navigate
-            :total 4}]]]]]])))
+            :total 3}]]]]]])))
