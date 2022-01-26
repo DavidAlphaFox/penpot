@@ -65,9 +65,31 @@
 
         show-vertical-scroll?   (or @scrolling? (> top-offset 0) (> bottom-offset 0))
 
-        scrollbar-x             (+ (:x vbox) (:width vbox) (* inv-zoom -32) )
+        scrollbar-x             (+ (:x vbox) (:width vbox) (* inv-zoom -32))
         scrollbar-y             (-> (+ (:y vbox) top-offset))
         scrollbar-height        (-> (- (+ (:y vbox) (:height vbox)) bottom-offset scrollbar-y))
+
+
+        fix-top (- (:y vbox) scrollbar-y)
+        fix-bottom (- (+ scrollbar-y scrollbar-height) (+ (:y vbox) (:height vbox)))
+
+        scrollbar-y (if (> fix-top 0)
+                      (+ scrollbar-y fix-top)
+                      scrollbar-y)
+
+        scrollbar-y (if (> fix-bottom 0)
+                      (+ scrollbar-y fix-bottom)
+                      scrollbar-y)
+
+        scrollbar-height (if (> fix-top 0)
+                           (- scrollbar-height fix-top)
+                           scrollbar-height)
+
+        scrollbar-height (if (> fix-bottom 0)
+                           (- scrollbar-height fix-bottom)
+                           scrollbar-height)
+
+        _ (println "fix-top" fix-top "fix-bottom" fix-bottom)
 
         height-factor           (/ (+ (:height vbox) vertical-offset) (:height vbox))
 
