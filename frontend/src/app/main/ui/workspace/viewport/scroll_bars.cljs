@@ -42,10 +42,13 @@
 
   (let [scrolling?              (mf/use-state false)
         fixed-y-start?-ref      (mf/use-ref false)
+        fixed-y-start           (mf/ref-val fixed-y-start?-ref)
         start-ref               (mf/use-ref nil)
         scrollbar-y-ref         (mf/use-ref nil)
+        scrollbar-y-stored      (mf/ref-val scrollbar-y-ref)
         scrollbar-y-padding-ref (mf/use-ref nil)
         scrollbar-height-ref    (mf/use-ref nil)
+        scrollbar-height-stored (mf/ref-val scrollbar-height-ref)
 
         base-objects            (mf/deref refs/workspace-page-objects)
         root-shapes             (get-in base-objects [uuid/zero :shapes])
@@ -87,8 +90,8 @@
                       (+ scrollbar-y fix-bottom)
                       scrollbar-y)
 
-        scrollbar-y (if (and @scrolling? (mf/ref-val fixed-y-start?-ref))
-                      (mf/ref-val scrollbar-y-ref)
+        scrollbar-y (if (and @scrolling? fixed-y-start)
+                      scrollbar-y-stored
                       scrollbar-y)
 
         scrollbar-height (if fix-top?
@@ -99,8 +102,8 @@
                            (- scrollbar-height fix-bottom)
                            scrollbar-height)
 
-        scrollbar-height (if (and @scrolling? (mf/ref-val fixed-y-start?-ref))
-                           (mf/ref-val scrollbar-height-ref)
+        scrollbar-height (if (and @scrolling? fixed-y-start)
+                           scrollbar-height-stored
                            scrollbar-height)
 
         height-factor           (/ (+ (:height vbox) vertical-offset) (:height vbox))
