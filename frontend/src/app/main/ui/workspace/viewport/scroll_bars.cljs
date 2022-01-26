@@ -50,6 +50,8 @@
         scrollbar-height-ref    (mf/use-ref nil)
         scrollbar-height-stored (mf/ref-val scrollbar-height-ref)
 
+        kk-ref    (mf/use-ref nil)
+
         base-objects            (mf/deref refs/workspace-page-objects)
         base-objects-rect
         (mf/use-memo
@@ -95,9 +97,11 @@
                       (+ scrollbar-y fix-bottom)
                       scrollbar-y)
 
-        scrollbar-y (if (and @scrolling? fixed-y-start)
-                      scrollbar-y-stored
+        scrollbar-y (if (and @scrolling? #_fixed-y-start)
+                      (- scrollbar-y-stored (- (- (:y vbox) (mf/ref-val kk-ref))))
                       scrollbar-y)
+        
+        ;; _ (prn "XXX" (- scrollbar-y (:y vbox)) (- scrollbar-y (mf/ref-val kk-ref)))
 
         scrollbar-height (if fix-top?
                            (- scrollbar-height fix-top)
@@ -107,7 +111,7 @@
                            (- scrollbar-height fix-bottom)
                            scrollbar-height)
 
-        scrollbar-height (if (and @scrolling? fixed-y-start)
+        scrollbar-height (if (and @scrolling? #_fixed-y-start)
                            scrollbar-height-stored
                            scrollbar-height)
 
@@ -125,6 +129,7 @@
                    new-scrollbar-y     (-> (translate-point-to-viewport viewport zoom current-pt)
                                            (:y)
                                            (+ (mf/ref-val scrollbar-y-padding-ref)))]
+               (mf/set-ref-val! kk-ref (:y vbox))
                (st/emit! (update-vertical-scroll-position delta))
                (mf/set-ref-val! scrollbar-y-ref new-scrollbar-y)
                (mf/set-ref-val! start-ref current-pt)))))
@@ -141,6 +146,7 @@
              (mf/set-ref-val! start-ref start-pt)
              (mf/set-ref-val! scrollbar-y-padding-ref scrollbar-y-padding)
              (mf/set-ref-val! scrollbar-y-ref (+ new-scrollbar-y scrollbar-y-padding))
+             (mf/set-ref-val! kk-ref (:y vbox))
              (mf/set-ref-val! scrollbar-height-ref scrollbar-height)
              (mf/set-ref-val! fixed-y-start?-ref (or fix-bottom? fix-top?))
              (reset! scrolling? true))))
