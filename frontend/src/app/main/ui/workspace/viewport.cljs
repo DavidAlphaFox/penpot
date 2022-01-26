@@ -29,6 +29,7 @@
    [app.main.ui.workspace.viewport.presence :as presence]
    [app.main.ui.workspace.viewport.rules :as rules]
    [app.main.ui.workspace.viewport.selection :as selection]
+   [app.main.ui.workspace.viewport.scroll-bars :as scroll-bars]
    [app.main.ui.workspace.viewport.snap-distances :as snap-distances]
    [app.main.ui.workspace.viewport.snap-points :as snap-points]
    [app.main.ui.workspace.viewport.thumbnail-renderer :as wtr]
@@ -250,7 +251,12 @@
            :hover (when (not= :frame (:type @hover))
                     #{(or @frame-hover (:id @hover))})
            :edition edition
-           :zoom zoom}])
+           :zoom zoom}]
+
+       [:& scroll-bars/viewport-vertical-scrollbar
+        {:zoom zoom
+         :vbox vbox
+         :viewport-ref viewport-ref}])
 
        (when show-selection-handlers?
          [:& selection/selection-handlers
