@@ -6,6 +6,7 @@
 
 (ns app.main.ui.workspace.colorpalette
   (:require
+   [app.main.ui.hooks.resize :refer [use-resize-hook]]
    [app.common.math :as mth]
    [app.main.data.workspace.colors :as mdc]
    [app.main.refs :as refs]
@@ -64,6 +65,9 @@
 
         container  (mf/use-ref nil)
 
+        {:keys [on-pointer-down on-lost-pointer-capture on-mouse-move parent-ref size]}
+        (use-resize-hook 72 54 80 :y true)
+
         on-left-arrow-click
         (mf/use-callback
          (mf/deps max-offset visible)
@@ -111,7 +115,11 @@
         (fn []
           (events/unlistenByKey key1))))
 
-    [:div.color-palette
+    [:div.color-palette {:ref parent-ref
+                         :style #js {"--height" (str size "px")}}
+     [:div.resize-area {:on-pointer-down on-pointer-down
+                        :on-lost-pointer-capture on-lost-pointer-capture
+                        :on-mouse-move on-mouse-move}]
      [:& dropdown {:show (:show-menu @state)
                    :on-close #(swap! state assoc :show-menu false)}
       [:ul.workspace-context-menu.palette-menu

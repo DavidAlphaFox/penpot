@@ -220,12 +220,12 @@
 (defn guide-creation-area
   [vbox zoom axis]
   (if (= axis :x)
-    {:x (:x vbox)
+    {:x (+ (:x vbox) (/ 4 zoom))
      :y (:y vbox)
      :width (/ 24 zoom)
      :height (:height vbox)}
 
-    {:x (:x vbox)
+    {:x (+ (:x vbox) (+ 28 zoom))
      :y (:y vbox)
      :width (:width vbox)
      :height (/ 24 zoom)}))
@@ -396,7 +396,7 @@
                  :on-pointer-up on-pointer-up
                  :on-lost-pointer-capture on-lost-pointer-capture
                  :on-mouse-move on-mouse-move
-                 :style {:fill "none"
+                 :style {:fill "#59b9e2"
                          :pointer-events "fill"
                          :cursor (if (= axis :x) (cur/resize-ew 0) (cur/resize-ns 0))}}]))
 

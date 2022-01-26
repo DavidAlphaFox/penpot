@@ -43,7 +43,7 @@
                    ;; bind with passive=false to allow the event to be cancelled
                    ;; https://stackoverflow.com/a/57582286/3219895
                    (events/listen js/window EventType.WHEEL on-mouse-wheel #js {:passive false})
-                   (events/listen js/window EventType.RESIZE on-resize)
+                   ;; (events/listen js/window EventType.RESIZE on-resize)
                    (events/listen js/window EventType.PASTE on-paste)]]
 
          (fn []
@@ -52,12 +52,42 @@
 
 (defn setup-viewport-size [viewport-ref]
   (mf/use-layout-effect
-  (fn []
-    (let [node (mf/ref-val viewport-ref)
-          prnt (dom/get-parent node)
-          size (dom/get-client-size prnt)]
-      ;; We schedule the event so it fires after `initialize-page` event
-      (timers/schedule #(st/emit! (dw/initialize-viewport size)))))))
+   (fn []
+     (let [node (mf/ref-val viewport-ref)
+           prnt (dom/get-parent node)
+           size (dom/get-client-size prnt)]
+       ;; We schedule the event so it fires after `initialize-page` event
+       (timers/schedule #(st/emit! (dw/initialize-viewport size))))))
+
+  #_(let [prev-val-ref (mf/use-ref nil)
+        prev-val (mf/ref-val prev-val-ref)
+        current-observer-ref (mf/use-ref nil)
+        current-observer (mf/ref-val current-observer-ref)
+        viewport-node (mf/ref-val viewport-ref)]
+    (if (not= prev-val viewport-node)
+      (do (println "change node")
+          (when (some? current-observer)
+            (println "Disconect")
+            (.disconnect current-observer))
+
+          (when (some? viewport-node)
+            (mf/set-ref-val! prev-val-ref viewport-node)
+            (let [observer (js/ResizeObserver.
+                            (fn [e]
+                              (.log js/console "?" e)
+                              #_(let [prnt (dom/get-parent viewport-node)
+                                    size (dom/get-client-size prnt)]
+                                (prn ">> size" size)
+                                #_(timers/schedule #(st/emit! (dw/update-viewport-size size))))
+
+
+                              ))]
+              (.log js/console "observing" viewport-node)
+              (.observe observer viewport-node)))))
+
+    )
+
+  )
 
 (defn setup-cursor [cursor alt? panning drawing-tool drawing-path? path-editing?]
   (mf/use-effect
@@ -80,7 +110,7 @@
        (when (not= @cursor new-cursor)
          (reset! cursor new-cursor))))))
 
-(defn setup-resize [layout viewport-ref]
+#_(defn setup-resize [layout viewport-ref]
   (let [on-resize (actions/on-resize viewport-ref)]
     (mf/use-layout-effect (mf/deps layout) on-resize)))
 

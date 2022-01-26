@@ -26,7 +26,8 @@
    [app.util.i18n :as i18n :refer [tr]]
    [app.util.object :as obj]
    [okulary.core :as l]
-   [rumext.alpha :as mf]))
+   [rumext.alpha :as mf]
+   [app.main.ui.hooks.resize :refer [use-resize-observer]]))
 
 ;; --- Workspace
 
@@ -39,11 +40,15 @@
         {:keys [options-mode]} local
         file   (obj/get props "file")
         layout (obj/get props "layout")
-        colorpalette? (:colorpalette layout)]
+        colorpalette? (:colorpalette layout)
+
+        ref (mf/use-ref nil)]
+
+    (use-resize-observer ref)
     [:*
      (when colorpalette? [:& colorpalette])
 
-     [:section.workspace-content
+     [:section.workspace-content {:ref ref}
       [:section.workspace-viewport
        [:& coordinates/coordinates {:colorpalette? colorpalette?}]
 

@@ -38,10 +38,6 @@ $height-palette-max: 80px;
     width: $width-left-toolbar;
   }
 
-  .settings-bar {
-    overflow-y: auto;
-  }
-
   .settings-bar.settings-bar-left {
     min-width: $width-settings-bar;
     max-width: 500px;
@@ -68,7 +64,7 @@ $height-palette-max: 80px;
     grid-area: color-palette;
     min-height: $height-palette-min;
     max-height: $height-palette-max;
-    width: var(--height, $height-palette);
+    height: var(--height, $height-palette);
   }
 }
 
