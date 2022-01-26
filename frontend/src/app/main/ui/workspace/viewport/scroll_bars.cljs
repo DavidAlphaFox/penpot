@@ -69,12 +69,6 @@
         scrollbar-y             (-> (+ (:y vbox) top-offset))
         scrollbar-height        (-> (- (+ (:y vbox) (:height vbox)) bottom-offset scrollbar-y))
 
-        ;; extra-height (if (> (- (:y vbox) scrollbar-y scrollbar-height) 0)
-        ;;     (+ (- (:y vbox) scrollbar-y scrollbar-height) (* inv-zoom 100))
-        ;;     0)
-
-        ;; scrollbar-y (+ scrollbar-y extra-height)
-
         height-factor           (/ (+ (:height vbox) vertical-offset) (:height vbox))
 
         on-mouse-move
