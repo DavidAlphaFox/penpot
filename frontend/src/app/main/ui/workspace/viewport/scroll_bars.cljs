@@ -8,7 +8,7 @@
   (:require
    [app.common.uuid :as uuid]
    [app.common.geom.shapes :as gsh]
-  ;;  [app.common.geom.point :as gpt]
+   [app.common.geom.point :as gpt]
    [app.main.refs :as refs]
    [app.main.store :as st]
    [app.util.dom :as dom]
@@ -16,16 +16,16 @@
    [rumext.alpha :as mf]))
 
 ;; TODO: esta función es casi igual en src/app/main/ui/workspace/viewport/utils.cljs pero con rendondeo
-;; (defn translate-point-to-viewport [viewport zoom pt]
-;;   (let [vbox     (.. ^js viewport -viewBox -baseVal)
-;;         brect    (dom/get-bounding-rect viewport)
-;;         brect    (gpt/point (:left brect)
-;;                             (:top brect))
-;;         box      (gpt/point (.-x vbox) (.-y vbox))
-;;         zoom     (gpt/point zoom)]
-;;     (-> (gpt/subtract pt brect)
-;;         (gpt/divide zoom)
-;;         (gpt/add box))))
+(defn translate-point-to-viewport [viewport zoom pt]
+  (let [vbox     (.. ^js viewport -viewBox -baseVal)
+        brect    (dom/get-bounding-rect viewport)
+        brect    (gpt/point (:left brect)
+                            (:top brect))
+        box      (gpt/point (.-x vbox) (.-y vbox))
+        zoom     (gpt/point zoom)]
+    (-> (gpt/subtract pt brect)
+        (gpt/divide zoom)
+        (gpt/add box))))
 
 (defn update-vertical-scroll-position [y-delta]
   (ptk/reify ::update-vertical-scroll-position
@@ -41,7 +41,11 @@
   [{:keys [viewport-ref zoom vbox]}]
 
   (let [scrolling?              (mf/use-state false)
+        fixed-y-start?-ref      (mf/use-ref false)
         start-ref               (mf/use-ref nil)
+        scrollbar-y-ref         (mf/use-ref nil)
+        scrollbar-y-padding-ref (mf/use-ref nil)
+        scrollbar-height-ref    (mf/use-ref nil)
 
         base-objects            (mf/deref refs/workspace-page-objects)
         root-shapes             (get-in base-objects [uuid/zero :shapes])
@@ -71,51 +75,73 @@
 
 
         fix-top (- (:y vbox) scrollbar-y)
+        fix-top? (> fix-top 0)
         fix-bottom (- (+ scrollbar-y scrollbar-height) (+ (:y vbox) (:height vbox)))
+        fix-bottom? (> fix-bottom 0)
 
-        scrollbar-y (if (> fix-top 0)
+        scrollbar-y (if fix-top?
                       (+ scrollbar-y fix-top)
                       scrollbar-y)
 
-        scrollbar-y (if (> fix-bottom 0)
+        scrollbar-y (if fix-bottom?
                       (+ scrollbar-y fix-bottom)
                       scrollbar-y)
 
-        scrollbar-height (if (> fix-top 0)
+        scrollbar-y (if (and @scrolling? (mf/ref-val fixed-y-start?-ref))
+                      (mf/ref-val scrollbar-y-ref)
+                      scrollbar-y)
+
+        scrollbar-height (if fix-top?
                            (- scrollbar-height fix-top)
                            scrollbar-height)
 
-        scrollbar-height (if (> fix-bottom 0)
+        scrollbar-height (if fix-bottom?
                            (- scrollbar-height fix-bottom)
                            scrollbar-height)
 
-        _ (println "fix-top" fix-top "fix-bottom" fix-bottom)
+        scrollbar-height (if (and @scrolling? (mf/ref-val fixed-y-start?-ref))
+                           (mf/ref-val scrollbar-height-ref)
+                           scrollbar-height)
 
         height-factor           (/ (+ (:height vbox) vertical-offset) (:height vbox))
 
         on-mouse-move
         (mf/use-callback
-         (mf/deps zoom height-factor scrolling?)
+         (mf/deps viewport-ref zoom height-factor scrolling?)
          (fn [event]
            (when-let [_ @scrolling?]
-             (let [start-pt    (mf/ref-val start-ref)
-                   current-pt  (dom/get-client-position event)
-                   delta       (/ (* height-factor (- (:y current-pt) (:y start-pt))) zoom)]
+             (let [viewport            (mf/ref-val viewport-ref)
+                   start-pt            (mf/ref-val start-ref)
+                   current-pt          (dom/get-client-position event)
+                   delta               (/ (* height-factor (- (:y current-pt) (:y start-pt))) zoom)
+                   new-scrollbar-y     (-> (translate-point-to-viewport viewport zoom current-pt)
+                                           (:y)
+                                           (+ (mf/ref-val scrollbar-y-padding-ref)))]
                (st/emit! (update-vertical-scroll-position delta))
+               (mf/set-ref-val! scrollbar-y-ref new-scrollbar-y)
                (mf/set-ref-val! start-ref current-pt)))))
 
         on-mouse-down
         (mf/use-callback
-         (mf/deps)
+         (mf/deps viewport-ref scrollbar-y scrollbar-height)
          (fn [event]
-           (let [start-pt (dom/get-client-position event)]
+           (let [viewport            (mf/ref-val viewport-ref)
+                 start-pt            (dom/get-client-position event)
+                 new-scrollbar-y     (-> (translate-point-to-viewport viewport zoom start-pt)
+                                         (:y))
+                 scrollbar-y-padding (- scrollbar-y new-scrollbar-y)]
              (mf/set-ref-val! start-ref start-pt)
+             (mf/set-ref-val! scrollbar-y-padding-ref scrollbar-y-padding)
+             (mf/set-ref-val! scrollbar-y-ref (+ new-scrollbar-y scrollbar-y-padding))
+             (mf/set-ref-val! scrollbar-height-ref scrollbar-height)
+             (mf/set-ref-val! fixed-y-start?-ref (or fix-bottom? fix-top?))
              (reset! scrolling? true))))
 
         on-mouse-up
         (mf/use-callback
          (mf/deps)
          (fn [_]
+           (mf/set-ref-val! fixed-y-start?-ref false)
            (reset! scrolling? false)))]
 
     (when show-vertical-scroll?
