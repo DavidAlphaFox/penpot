@@ -41,8 +41,8 @@
   [{:keys [viewport-ref zoom vbox]}]
 
   (let [scrolling?              (mf/use-state false)
-        fixed-y-start?-ref      (mf/use-ref false)
-        fixed-y-start           (mf/ref-val fixed-y-start?-ref)
+        ;; fixed-y-start?-ref      (mf/use-ref false)
+        ;; fixed-y-start           (mf/ref-val fixed-y-start?-ref)
         start-ref               (mf/use-ref nil)
         scrollbar-y-ref         (mf/use-ref nil)
         scrollbar-y-stored      (mf/ref-val scrollbar-y-ref)
@@ -148,14 +148,14 @@
              (mf/set-ref-val! scrollbar-y-ref (+ new-scrollbar-y scrollbar-y-padding))
              (mf/set-ref-val! kk-ref (:y vbox))
              (mf/set-ref-val! scrollbar-height-ref scrollbar-height)
-             (mf/set-ref-val! fixed-y-start?-ref (or fix-bottom? fix-top?))
+            ;;  (mf/set-ref-val! fixed-y-start?-ref (or fix-bottom? fix-top?))
              (reset! scrolling? true))))
 
         on-mouse-up
         (mf/use-callback
          (mf/deps)
          (fn [_]
-           (mf/set-ref-val! fixed-y-start?-ref false)
+          ;;  (mf/set-ref-val! fixed-y-start?-ref false)
            (reset! scrolling? false)))]
 
     (when show-vertical-scroll?
