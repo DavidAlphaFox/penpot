@@ -36,7 +36,7 @@
       [:div.animated {:class @klass}
        [:div.modal-container.onboarding.feature
         [:div.modal-left
-         [:img {:src "images/features/advanced-proto.gif" :border "0" :alt "Advanced interactions"}]]
+         [:img {:src "images/features/1.11-animations.gif" :border "0" :alt "Animations"}]]
         [:div.modal-right
          [:div.modal-title
           [:h2 "Prototype animations"]]
@@ -55,7 +55,7 @@
       [:div.animated {:class @klass}
        [:div.modal-container.onboarding.feature
         [:div.modal-left
-         [:img {:src "images/features/flows-proto.gif" :border "0" :alt "Multiple flows"}]]
+         [:img {:src "images/features/1.11-bg-export.gif" :border "0" :alt "Ignore background on export"}]]
         [:div.modal-right
          [:div.modal-title
           [:h2 "Ignore artboard background on export"]]
@@ -74,7 +74,7 @@
       [:div.animated {:class @klass}
        [:div.modal-container.onboarding.feature
         [:div.modal-left
-         [:img {:src "images/features/libraries-feature.gif" :border "0" :alt "Libraries & templates"}]]
+         [:img {:src "images/features/1.11-zoom-widget.gif" :border "0" :alt "New zoom widget"}]]
         [:div.modal-right
          [:div.modal-title
           [:h2 "New zoom widget"]]
