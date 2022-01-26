@@ -42,9 +42,14 @@
         layout (obj/get props "layout")
         colorpalette? (:colorpalette layout)
 
-        ref (mf/use-ref nil)]
+        ref (mf/use-ref nil)
 
-    (use-resize-observer ref)
+        on-resize
+        (fn [resize-type size]
+          (when (:vport local)
+            (st/emit! (dw/update-viewport-size resize-type size))))]
+
+    (use-resize-observer ref on-resize)
     [:*
      (when colorpalette? [:& colorpalette])
 

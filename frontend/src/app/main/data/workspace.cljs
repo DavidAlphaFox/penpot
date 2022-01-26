@@ -522,7 +522,7 @@
                        (update :y y)))))))
 
 (defn update-viewport-size
-  [{:keys [width height] :as size}]
+  [resize-type {:keys [width height] :as size}]
   (ptk/reify ::update-viewport-size
     ptk/UpdateEvent
     (update [_ state]
@@ -533,14 +533,32 @@
                   local
                   (let [wprop (/ (:width vport) width)
                         hprop (/ (:height vport) height)
+
+                        vbox (:vbox local)
+                        vbox-x (:x vbox)
+                        vbox-y (:y vbox)
+                        vbox-width (:width vbox)
+                        vbox-height (:height vbox)
+
+                        vbox-width' (/ vbox-width wprop)
+                        vbox-height' (/ vbox-height hprop)
+
+                        ;; Resize left: all to the x
+                        ;; Resize right: nothing to the x
+                        ;; Resize center: x only half
+                        vbox-x' (case resize-typep
+                                  :left  (+ vbox-x (- vbox-width vbox-width'))
+                                  :right vbox-x
+                                         (+ vbox-x (/ (- vbox-width vbox-width') 2)))
+                        vbox-y' vbox-y ;;(+ vbox-y (- vbox-height vbox-height'))
                         ]
-                    (-> local         ;; This matches $width-settings-bar
-                        (assoc :vport size) ;; in frontend/resources/styles/main/partials/sidebar.scss
-                        (update :vbox (fn [vbox]
-                                        (-> vbox
-                                            (update :width #(/ % wprop))
-                                            (update :height #(/ % hprop))
-                                            )))))))))))
+
+                    (-> local
+                        (assoc :vport size)
+                        (assoc-in [:vbox :x] vbox-x')
+                        (assoc-in [:vbox :y] vbox-y')
+                        (assoc-in [:vbox :width] vbox-width')
+                        (assoc-in [:vbox :height] vbox-height')))))))))
 
 (defn start-panning []
   (ptk/reify ::start-panning

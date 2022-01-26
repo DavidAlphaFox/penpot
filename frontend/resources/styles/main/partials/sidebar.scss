@@ -5,9 +5,6 @@
 // Copyright (c) 2015-2020 Andrey Antukh <niwi@niwi.nz>
 // Copyright (c) 2015-2020 Juan de la Cruz <delacruzgarciajuan@gmail.com>
 
-// $width-settings-bar: 16rem;
-// This width is also used in update-viewport-size at frontend/src/app/main/data/workspace.cljs
-
 .settings-bar {
   background-color: $color-gray-50;
   border-left: 1px solid $color-gray-60;
@@ -152,7 +149,6 @@
   }
 
   & .resize-area {
-    background: rgba(255, 0, 0, 0.3);
     position: absolute;
     width: 8px;
     height: 100%;
@@ -161,11 +157,11 @@
   }
 
   &.settings-bar-left .resize-area {
-    right: 0;
+    right: -8px;
   }
 
   &.settings-bar-right .resize-area {
-    left: 0;
+    left: -8px;
   }
 }
 

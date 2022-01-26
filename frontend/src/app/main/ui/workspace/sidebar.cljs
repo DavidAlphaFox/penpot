@@ -23,7 +23,7 @@
   {:wrap [mf/memo]}
   [{:keys [layout ] :as props}]
   (let [{:keys [on-pointer-down on-lost-pointer-capture on-mouse-move parent-ref size]}
-        (use-resize-hook 255 255 500 :x false)]
+        (use-resize-hook 255 255 500 :x false :left)]
 
     [:aside.settings-bar.settings-bar-left {:ref parent-ref
                                             :style #js {"--width" (str size "px")}}
@@ -50,7 +50,7 @@
    ::mf/wrap [mf/memo]}
   [props]
   (let [{:keys [on-pointer-down on-lost-pointer-capture on-mouse-move parent-ref size]}
-        (use-resize-hook 255 255 500 :x true)
+        (use-resize-hook 255 255 500 :x true :right)
 
         drawing-tool (:tool (mf/deref refs/workspace-drawing))]
     [:aside.settings-bar.settings-bar-right {:ref parent-ref

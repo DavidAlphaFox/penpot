@@ -10,8 +10,10 @@
    [app.common.geom.point :as gpt]
    [rumext.alpha :as mf]))
 
+(def last-resize-type nil)
+
 (defn use-resize-hook
-  [initial min-val max-val axis negate?]
+  [initial min-val max-val axis negate? resize-type]
   (let [size-state (mf/use-state initial)
         parent-ref (mf/use-ref nil)
 
@@ -52,36 +54,23 @@
      :size @size-state}))
 
 (defn use-resize-observer
-  [node-ref]
+  [node-ref callback]
 
   (let [prev-val-ref (mf/use-ref nil)
         current-observer-ref (mf/use-ref nil)
 
         node (mf/ref-val node-ref)
         current-observer (mf/ref-val current-observer-ref)
-        prev-val (mf/ref-val prev-val-ref)
-        ]
+        prev-val (mf/ref-val prev-val-ref)]
 
-    (if (not= prev-val node)
-      (do (println "change node")
-          (when (some? current-observer)
-            (println "Disconect")
-            (.disconnect current-observer))
+    (when (and (not= prev-val node) (some? current-observer))
+        (.disconnect current-observer))
 
-          (when (some? node)
-            (mf/set-ref-val! prev-val-ref node)
-            (let [observer
-                  (js/ResizeObserver.
-                   (fn [e]
-                     (.log js/console "?" e)
-                     (let [;;prnt (dom/get-parent node)
-                           size (dom/get-client-size node)]
-                       (prn ">> size" size)
-                       #_(timers/schedule #(st/emit! (dw/update-viewport-size size))))
-                     ))]
-              (.log js/console "observing" node)
-              (.observe observer node)))))
-
-    )
-
-  )
+    (when (and (not= prev-val node) (some? node))
+      (mf/set-ref-val! prev-val-ref node)
+      (let [observer
+            (js/ResizeObserver.
+             (fn [e]
+               (let [size (dom/get-client-size node)]
+                 (when callback (callback size)))))]
+        (.observe observer node)))))
