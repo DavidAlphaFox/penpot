@@ -51,9 +51,14 @@
         scrollbar-height-stored (mf/ref-val scrollbar-height-ref)
 
         base-objects            (mf/deref refs/workspace-page-objects)
-        root-shapes             (get-in base-objects [uuid/zero :shapes])
-        shapes                  (->> root-shapes (mapv #(get base-objects %)))
-        base-objects-rect       (gsh/selection-rect shapes)
+        base-objects-rect
+        (mf/use-memo
+         (mf/deps base-objects)
+         (fn []
+           (let [root-shapes             (get-in base-objects [uuid/zero :shapes])
+                 shapes                  (->> root-shapes (mapv #(get base-objects %)))]
+             (gsh/selection-rect shapes))))
+
 
         inv-zoom                (/ 1 zoom)
 
