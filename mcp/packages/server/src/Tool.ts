@@ -1,4 +1,29 @@
-import { z } from "zod";
+/**
+ * =============================================================================
+ * MCP 工具基类模块 (MCP Tool Base Class)
+ * =============================================================================
+ *
+ * 【模块概述】
+ * 本模块定义了所有 MCP 工具的基类，提供：
+ * - 自动参数验证和类型安全
+ * - 统一的执行框架和错误处理
+ * - 日志记录和调试支持
+ * - Schema 自动生成
+ *
+ * 【核心概念】
+ * 1. Zod - TypeScript 优先的模式验证库
+ * 2. ToolResponse - MCP 工具响应基类
+ * 3. AsyncLocalStorage - 请求级会话上下文存储
+ * 4. 工具执行计数器 - 用于追踪工具执行的唯一 ID
+ *
+ * 【依赖关系】
+ * - zod - 参数模式验证
+ * - ToolResponse - 工具响应类型
+ * - PenpotMcpServer - MCP 服务器引用
+ * - logger - 日志记录器
+ *
+ * =============================================================================
+ */
 import "reflect-metadata";
 import { TextResponse, ToolResponse } from "./ToolResponse";
 import type { PenpotMcpServer, SessionContext } from "./PenpotMcpServer";
@@ -25,6 +50,12 @@ export abstract class Tool<TArgs extends object> {
     /** monotonically increasing counter for unique tool execution IDs */
     private static executionCounter = 0;
 
+    /**
+     * 创建工具实例
+     *
+     * @param mcpServer - MCP 服务器引用，用于获取会话上下文
+     * @param inputSchema - Zod 参数验证 schema
+     */
     protected constructor(
         protected mcpServer: PenpotMcpServer,
         private inputSchema: z.ZodRawShape
@@ -35,6 +66,18 @@ export abstract class Tool<TArgs extends object> {
      *
      * This method handles the unknown args from the MCP protocol,
      * delegating to the type-safe implementation.
+     */
+    /**
+     * 执行工具（统一入口）
+     *
+     * 提供工具执行的统一框架：
+     * - 生成唯一执行 ID 用于追踪
+     * - 记录开始和结束日志
+     * - 调用子类的 executeCore 实现
+     * - 捕获并处理执行中的错误
+     *
+     * @param args - 未知类型的工具参数（来自 MCP 协议）
+     * @returns Promise<ToolResponse> - 工具执行结果
      */
     async execute(args: unknown): Promise<ToolResponse> {
         const executionId = ++Tool.executionCounter;

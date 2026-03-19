@@ -4,6 +4,36 @@
 ;;
 ;; Copyright (c) KALEIDOS INC
 
+;; =============================================================================
+;; 评论模块 (Comments Module)
+;; =============================================================================
+;;
+;; 【模块概述】
+;; 本模块处理Penpot设计工具中的评论功能。
+;; 提供评论线程的创建、查询、更新、删除以及评论通知等RPC命令。
+;;
+;; 【核心概念】
+;; 1. 评论线程 (Comment Thread) - 针对画布上特定位置的评论集合
+;; 2. 评论 (Comment) - 线程中的单条评论消息
+;; 3. 提及 (Mention) - @用户提及，用于通知
+;; 4. 已读状态 (Read Status) - 用户对线程的已读/未读状态
+;; 5. 解决状态 (Resolved Status) - 线程是否已标记为已解决
+;;
+;; 【依赖关系】
+;; - app.rpc.commands.files - 文件权限验证
+;; - app.rpc.commands.profile - 用户资料处理
+;; - app.rpc.commands.teams - 团队管理
+;; - app.email - 邮件通知发送
+;; - app.features.fdata - 文件数据加载
+;; - app.loggers.audit - 审计日志
+;;
+;; 【数据库表】
+;; - comment_thread: 评论线程表
+;; - comment: 评论表
+;; - comment_thread_status: 用户对线程的阅读状态
+;;
+;; =============================================================================
+
 (ns app.rpc.commands.comments
   (:require
    [app.binfile.common :as bfc]
@@ -34,13 +64,30 @@
    [clojure.set :as set]
    [cuerdas.core :as str]))
 
-;; --- GENERAL PURPOSE INTERNAL HELPERS
+;; --- GENERAL PURPOSE INTERNAL HELPERS (通用内部辅助函数)
+
+;; --- 解析评论内容的正则表达式
+;; r-mentions-split: 用于分割包含@提及的内容
+;; r-mentions: 用于提取@提及的用户信息（格式: @[用户名](用户ID)）
 
 (def r-mentions-split #"@\[[^\]]*\]\([^\)]*\)")
 (def r-mentions #"@\[([^\]]*)\]\(([^\)]*)\)")
 
+;; --- 评论最大长度限制
 (def comment-max-length 750)
 
+;; --- 格式化评论内容 (Format Comment)
+;;
+;; 【功能说明】
+;; 将评论内容中的@提及转换为纯文本格式。
+;; 从Markdown格式 (@[用户名](用户ID)) 提取用户名。
+;;
+;; 【参数】
+;; content - 包含@提及的评论内容
+;;
+;; 【返回值】
+;; 格式化后的纯文本内容
+;;
 (defn- format-comment
   [{:keys [content]}]
   (->> (d/interleave-all
@@ -79,9 +126,36 @@
     (= :all (-> props :notifications :email-comments))))
 
 (defn- mention-email?
+  "检查用户是否开启评论提及邮件通知。
+   
+   【参数】
+   props - 用户通知设置属性
+   
+   【返回值】
+   布尔值，true表示开启邮件通知"
   [props]
   (not= :none (-> props :notifications :email-comments)))
 
+;; --- 发送评论通知邮件 (Send Comment Emails)
+;;
+;; 【功能说明】
+;; 向相关用户发送评论通知邮件。根据不同场景发送不同类型的邮件：
+;; 1. 评论提及通知 - 当用户在评论中被@时
+;; 2. 线程通知 - 当有新评论添加到用户参与的线程时
+;; 3. 通用通知 - 当用户开启全员通知时
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; profile - 当前评论用户资料
+;; comment - 评论对象
+;; thread - 评论线程对象
+;; file - 文件对象
+;;
+;; 【通知策略】
+;; - 被@的用户：总是发送提及邮件
+;; - 线程参与者：发送线程更新邮件
+;; - 其他用户：仅当开启全员通知时发送
+;;
 (defn send-comment-emails!
   [conn profile comment thread file]
   (let [team-users        (get-team-users conn (:team-id file))
@@ -211,10 +285,29 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; QUERY COMMANDS
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ;;;;
 
-;; --- COMMAND: Get Comment Threads
-
+;; --- COMMAND: 获取评论线程 (Get Comment Threads)
+;;
+;; 【功能说明】
+;; 获取指定文件的所有评论线程列表。
+;; 返回线程详细信息，包括评论数量和未读数量。
+;;
+;; 【参数】
+;; file-id - 文件ID（可选，与team-id互斥）
+;; team-id - 团队ID（可选）
+;; share-id - 分享ID（可选，用于公开链接访问）
+;;
+;; 【返回值】
+;; 评论线程列表，每个包含：
+;; - 线程基本信息
+;; - 所有者信息（姓名、邮箱、头像）
+;; - 评论数量
+;; - 未读评论数量
+;;
+;; 【权限检查】
+;; 需要文件评论权限
+;;
 (declare ^:private get-comment-threads)
 
 (def ^:private
@@ -273,8 +366,22 @@
   (->> (db/exec! conn [sql:comment-threads-by-file-id profile-id file-id])
        (into [] xf-decode-row)))
 
-;; --- COMMAND: Get Unread Comment Threads
-
+;; --- COMMAND: 获取未读评论线程 (Get Unread Comment Threads)
+;;
+;; 【功能说明】
+;; 获取当前用户未读的评论线程列表。
+;; 根据用户通知设置（全员/部分）返回不同范围的未读线程。
+;;
+;; 【参数】
+;; team-id - 团队ID
+;;
+;; 【返回值】
+;; 未读评论线程列表
+;;
+;; 【通知设置】
+;; - :all: 返回团队所有未读线程
+;; - :partial: 仅返回用户创建的或被@的线程
+;;
 (def ^:private sql:unread-all-comment-threads-by-team
   (str "WITH threads AS ("
        (get-comment-threads-sql "AND p.team_id = ?")
@@ -312,8 +419,19 @@
   (teams/check-read-permissions! cfg profile-id team-id)
   (get-unread-comment-threads cfg profile-id team-id))
 
-;; --- COMMAND: Get Single Comment Thread
-
+;; --- COMMAND: 获取单个评论线程 (Get Single Comment Thread)
+;;
+;; 【功能说明】
+;; 获取指定文件的特定评论线程详情。
+;;
+;; 【参数】
+;; file-id - 文件ID
+;; id - 线程ID
+;; share-id - 分享ID（可选）
+;;
+;; 【返回值】
+;; 线程详细信息，包括所有相关评论的摘要
+;;
 (def ^:private
   schema:get-comment-thread
   [:map {:title "get-comment-thread"}
@@ -333,10 +451,22 @@
                  (some-> (db/exec-one! conn [sql:get-comment-thread profile-id file-id id])
                          (decode-row)))))
 
-;; --- COMMAND: Retrieve Comments
-
-(declare ^:private get-comments)
-
+;; --- COMMAND: 获取评论列表 (Retrieve Comments)
+;;
+;; 【功能说明】
+;; 获取指定评论线程的所有评论。
+;; 按创建时间升序排列。
+;;
+;; 【参数】
+;; thread-id - 线程ID
+;; share-id - 分享ID（可选）
+;;
+;; 【返回值】
+;; 评论列表，每条评论包含：
+;; - 评论内容
+;; - 所有者信息
+;; - 创建时间
+;;
 (def ^:private
   schema:get-comments
   [:map {:title "get-comments"}
@@ -369,11 +499,22 @@
   (->> (db/exec! conn [sql:get-comments thread-id])
        (into [] xf-decode-row)))
 
-;; --- COMMAND: Get file comments users
-
-;; All the profiles that had comment the file, plus the current
-;; profile.
-
+;; --- COMMAND: 获取文件评论用户 (Get File Comments Users)
+;;
+;; 【功能说明】
+;; 获取在文件中留下评论的所有用户资料。
+;; 包括当前用户（即使未评论）。
+;;
+;; 【参数】
+;; file-id - 文件ID
+;; share-id - 分享ID（可选）
+;;
+;; 【返回值】
+;; 用户列表，包含ID、邮箱、全名、头像和活跃状态
+;;
+;; 【权限检查】
+;; 需要文件评论权限
+;;
 (def ^:private sql:file-comment-users
   "WITH available_profiles AS (
      SELECT DISTINCT owner_id AS id
@@ -412,12 +553,43 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; MUTATION COMMANDS
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ;;;;
 
 (declare ^:private create-comment-thread)
 
-;; --- COMMAND: Create Comment Thread
-
+;; --- COMMAND: 创建评论线程 (Create Comment Thread)
+;;
+;; 【功能说明】
+;; 在画布上创建新的评论线程。
+;; 同时创建线程和第一条评论，并发送提及通知邮件。
+;;
+;; 【参数】
+;; file-id - 文件ID
+;; position - 评论在画布上的位置坐标
+;; content - 评论内容（最大750字符）
+;; page-id - 页面ID
+;; frame-id - 画框ID
+;; share-id - 分享ID（可选）
+;; mentions - 被@的用户ID集合（可选）
+;;
+;; 【返回值】
+;; 创建的线程对象，包含：
+;; - 线程基本信息
+;; - 所有者信息
+;; - 首条评论ID
+;;
+;; 【权限检查】
+;; 需要文件评论权限
+;;
+;; 【约束检查】
+;; - 检查文件评论数量配额
+;; - 检查评论线程数量配额
+;;
+;; 【注意事项】
+;; - FIXME: 此方法会锁定文件表，需要优化到独立表或Redis管理序列号
+;; - 触发Webhooks事件
+;; - 支持重试机制（处理并发冲突）
+;;
 (def ^:private
   schema:create-comment-thread
   [:map {:title "create-comment-thread"}
@@ -522,14 +694,22 @@
         (add-owner profile)
         (assoc :comment-id (:id comment)))))
 
-;; --- COMMAND: Update Comment Thread Status
-
-(def ^:private
-  schema:update-comment-thread-status
-  [:map {:title "update-comment-thread-status"}
-   [:id ::sm/uuid]
-   [:share-id {:optional true} [:maybe ::sm/uuid]]])
-
+;; --- COMMAND: 更新评论线程状态 (Update Comment Thread Status)
+;;
+;; 【功能说明】
+;; 将评论线程标记为已读。
+;; 更新当前用户对线程的阅读状态。
+;;
+;; 【参数】
+;; id - 线程ID
+;; share-id - 分享ID（可选）
+;;
+;; 【返回值】
+;; 无返回值
+;;
+;; 【权限检查】
+;; 需要文件评论权限
+;;
 (sv/defmethod ::update-comment-thread-status
   {::doc/added "1.15"
    ::sm/params schema:update-comment-thread-status
@@ -539,8 +719,23 @@
     (files/check-comment-permissions! conn profile-id file-id share-id)
     (upsert-comment-thread-status! conn profile-id id)))
 
-;; --- COMMAND: Update Comment Thread
-
+;; --- COMMAND: 更新评论线程 (Update Comment Thread)
+;;
+;; 【功能说明】
+;; 更新评论线程的解决状态。
+;; 标记线程为已解决或未解决。
+;;
+;; 【参数】
+;; id - 线程ID
+;; is-resolved - 是否已解决（布尔值）
+;; share-id - 分享ID（可选）
+;;
+;; 【返回值】
+;; 无返回值
+;;
+;; 【权限检查】
+;; 需要文件评论权限
+;;
 (def ^:private
   schema:update-comment-thread
   [:map {:title "update-comment-thread"}
@@ -560,9 +755,37 @@
                 {:id id})
     nil))
 
-;; --- COMMAND: Add Comment
-
-(def ^:private
+;; --- COMMAND: 添加评论 (Add Comment)
+;;
+;; 【功能说明】
+;; 向现有评论线程添加新评论。
+;; 更新线程的参与者和修改时间，并发送通知邮件。
+;;
+;; 【参数】
+;; thread-id - 线程ID
+;; content - 评论内容（最大750字符）
+;; share-id - 分享ID（可选）
+;; mentions - 被@的用户ID集合（可选）
+;;
+;; 【返回值】
+;; 创建的评论对象
+;;
+;; 【权限检查】
+;; 需要文件评论权限
+;;
+;; 【约束检查】
+;; - 检查文件评论数量配额
+;;
+;; 【处理流程】
+;; 1. 创建评论记录
+;; 2. 更新线程参与者集合
+;; 3. 更新线程修改时间
+;; 4. 如果页面改变，同步更新缓存的页面名
+;; 5. 更新用户阅读状态
+;; 6. 发送通知邮件
+;; 7. 记录审计日志
+;;
+(sv/defmethod ::create-comment
   schema:create-comment
   [:map {:title "create-comment"}
    [:thread-id ::sm/uuid]
@@ -630,9 +853,29 @@
 
       (vary-meta comment assoc ::audit/props comment))))
 
-;; --- COMMAND: Update Comment
-
-(def ^:private
+;; --- COMMAND: 更新评论 (Update Comment)
+;;
+;; 【功能说明】
+;; 更新评论的内容和提及用户。
+;; 仅评论所有者可以编辑自己的评论。
+;;
+;; 【参数】
+;; id - 评论ID
+;; content - 新评论内容（最大750字符）
+;; share-id - 分享ID（可选）
+;; mentions - 新的被@用户ID集合（可选）
+;;
+;; 【返回值】
+;; 无返回值
+;;
+;; 【权限检查】
+;; - 需要文件评论权限
+;; - 仅评论所有者可编辑（否则抛出:not-allowed错误）
+;;
+;; 【TODO】
+;; - 检查是否有新增提及，如有则发送新邮件通知
+;;
+(sv/defmethod ::update-comment
   schema:update-comment
   [:map {:title "update-comment"}
    [:id ::sm/uuid]
@@ -678,9 +921,24 @@
                   {::db/return-keys false})
       nil)))
 
-;; --- COMMAND: Delete Comment Thread
-
-(def ^:private
+;; --- COMMAND: 删除评论线程 (Delete Comment Thread)
+;;
+;; 【功能说明】
+;; 删除整个评论线程及其所有评论。
+;; 仅线程所有者可以删除。
+;;
+;; 【参数】
+;; id - 线程ID
+;; share-id - 分享ID（可选）
+;;
+;; 【返回值】
+;; 无返回值
+;;
+;; 【权限检查】
+;; - 需要文件评论权限
+;; - 仅线程所有者可删除（否则抛出:not-allowed错误）
+;;
+(sv/defmethod ::delete-comment-thread
   schema:delete-comment-thread
   [:map {:title "delete-comment-thread"}
    [:id ::sm/uuid]
@@ -701,9 +959,24 @@
                 {::db/return-keys false})
     nil))
 
-;; --- COMMAND: Delete comment
-
-(def ^:private
+;; --- COMMAND: 删除评论 (Delete Comment)
+;;
+;; 【功能说明】
+;; 删除单条评论（非整个线程）。
+;; 仅评论所有者可以删除自己的评论。
+;;
+;; 【参数】
+;; id - 评论ID
+;; share-id - 分享ID（可选）
+;;
+;; 【返回值】
+;; 无返回值
+;;
+;; 【权限检查】
+;; - 需要文件评论权限
+;; - 仅评论所有者可删除（否则抛出:not-allowed错误）
+;;
+(sv/defmethod ::delete-comment
   schema:delete-comment
   [:map {:title "delete-comment"}
    [:id ::sm/uuid]
@@ -729,8 +1002,24 @@
                 {::db/return-keys false})
     nil))
 
-;; --- COMMAND: Update comment thread position
-
+;; --- COMMAND: 更新评论线程位置 (Update Comment Thread Position)
+;;
+;; 【功能说明】
+;; 更新评论线程在画布上的位置。
+;; 当画框移动时需要同步更新评论位置。
+;;
+;; 【参数】
+;; id - 线程ID
+;; position - 新位置坐标
+;; frame-id - 新画框ID
+;; share-id - 分享ID（可选）
+;;
+;; 【返回值】
+;; 无返回值
+;;
+;; 【权限检查】
+;; 需要文件评论权限
+;;
 (def ^:private
   schema:update-comment-thread-position
   [:map {:title "update-comment-thread-position"}
@@ -754,8 +1043,23 @@
                 {::db/return-keys false})
     nil))
 
-;; --- COMMAND: Update comment frame
-
+;; --- COMMAND: 更新评论线程画框 (Update Comment Frame)
+;;
+;; 【功能说明】
+;; 更新评论线程所属的画框。
+;; 当评论被移动到不同画框时使用。
+;;
+;; 【参数】
+;; id - 线程ID
+;; frame-id - 新画框ID
+;; share-id - 分享ID（可选）
+;;
+;; 【返回值】
+;; 无返回值
+;;
+;; 【权限检查】
+;; 需要文件评论权限
+;;
 (def ^:private
   schema:update-comment-thread-frame
   [:map {:title "update-comment-thread-frame"}
@@ -782,6 +1086,18 @@
   [:map {:title "mark-all-threads-as-read"}
    [:threads [:vector ::sm/uuid]]])
 
+;; --- COMMAND: 标记所有线程为已读 (Mark All Threads As Read)
+;;
+;; 【功能说明】
+;; 批量将多个评论线程标记为已读状态。
+;; 用户查看通知中心时常用此功能。
+;;
+;; 【参数】
+;; threads - 要标记为已读的线程ID列表
+;;
+;; 【返回值】
+;; 无返回值
+;;
 (sv/defmethod ::mark-all-threads-as-read
   {::doc/added "1.15"
    ::sm/params schema:mark-all-threads-as-read}

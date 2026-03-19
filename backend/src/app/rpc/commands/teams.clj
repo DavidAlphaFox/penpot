@@ -4,6 +4,36 @@
 ;;
 ;; Copyright (c) KALEIDOS INC
 
+;; =============================================================================
+;; 团队管理模块 (Team Management Module)
+;; =============================================================================
+;;
+;; 【模块概述】
+;; 本模块提供团队(Team)相关的所有RPC命令，包括团队查询、成员管理、角色权限控制等功能。
+;; 团队是Penpot中组织用户和项目的基本单位，每个团队可以包含多个项目和成员。
+;;
+;; 【核心概念】
+;; 1. 团队(Team) - 组织用户和项目的容器，是权限控制的基础单元
+;; 2. 成员角色(Member Role) - 包括owner(所有者)、admin(管理员)、editor(编辑者)
+;; 3. 团队权限(Team Permissions) - 基于成员角色控制对团队资源的访问权限
+;; 4. 团队邀请(Team Invitation) - 通过邮件邀请新成员加入团队
+;;
+;; 【依赖关系】
+;; - app.rpc.commands.profile - 用户_profile相关操作
+;; - app.rpc.permissions - 权限检查和角色分配
+;; - app.common.types.team - 团队数据类型定义
+;; - app.msgbus - 消息总线，用于通知团队成员变更
+;; - app.nitrate - 第三方组织集成
+;;
+;; 【主要功能】
+;; - 查询团队信息、成员、统计数据
+;; - 创建、更新、删除团队
+;; - 团队成员管理（添加、移除、角色变更）
+;; - 团队照片/头像更新
+;; - 成员离开团队
+;;
+;; =============================================================================
+
 (ns app.rpc.commands.teams
   (:require
    [app.common.data :as d]
@@ -37,6 +67,8 @@
 
 ;; --- Helpers & Specs
 
+;; 获取团队权限的SQL查询语句
+;; 查询指定用户在指定团队中的权限信息（是否为所有者、管理员、是否可编辑）
 (def ^:private sql:team-permissions
   "SELECT tpr.is_owner,
           tpr.is_admin,
@@ -47,6 +79,16 @@
       AND tpr.team_id = ?
       AND t.deleted_at IS NULL")
 
+;; 获取用户在特定团队中的权限信息
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; profile-id - 用户ID
+;; team-id - 团队ID
+;;
+;; 【返回值】
+;; 返回权限映射，包含 :is-owner、:is-admin、:can-edit、:can-read 键
+;; 如果用户不在团队中则返回 nil
 (defn get-permissions
   [conn profile-id team-id]
   (let [rows     (db/exec! conn [sql:team-permissions profile-id team-id])
@@ -59,21 +101,30 @@
        :can-edit (or is-owner is-admin can-edit)
        :can-read true})))
 
+;; 检查用户是否具有团队管理员权限的谓词函数
+;; 基于 get-permissions 函数创建
 (def has-admin-permissions?
   (perms/make-admin-predicate-fn get-permissions))
 
+;; 检查用户是否具有团队编辑权限的谓词函数
+;; 基于 get-permissions 函数创建
 (def has-edit-permissions?
   (perms/make-edition-predicate-fn get-permissions))
 
+;; 检查用户是否具有团队读取权限的谓词函数
+;; 基于 get-permissions 函数创建
 (def has-read-permissions?
   (perms/make-read-predicate-fn get-permissions))
 
+;; 检查用户是否具有团队管理员权限，如无则抛出异常
 (def check-admin-permissions!
   (perms/make-check-fn has-admin-permissions?))
 
+;; 检查用户是否具有团队编辑权限，如无则抛出异常
 (def check-edition-permissions!
   (perms/make-check-fn has-edit-permissions?))
 
+;; 检查用户是否具有团队读取权限，如无则抛出异常
 (def check-read-permissions!
   (perms/make-check-fn has-read-permissions?))
 
@@ -84,8 +135,32 @@
       (some? features) (assoc :features (db/decode-pgarray features #{}))
       (some? subscription) (assoc :subscription (db/decode-transit-pgobject subscription)))))
 
+;; 解码团队数据库记录行
+;; 将数据库返回的原始记录转换为应用程序使用的格式
+;;
+;; 【参数】
+;; row - 数据库记录映射
+;;
+;; 【返回值】
+;; 解码后的记录，包含 :features (从PG数组转换) 和 :subscription (从Transit对象转换)
+(defn decode-row
+  [{:keys [features subscription] :as row}]
+  (when row
+    (cond-> row
+      (some? features) (assoc :features (db/decode-pgarray features #{}))
+      (some? subscription) (assoc :subscription (db/decode-transit-pgobject subscription)))))
+
 ;; FIXME: move
 
+;; 检查成员的邮箱是否在全局退信报告中
+;; 用于防止向经常退信的用户发送邮件
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; member - 成员映射，包含 :email 键
+;;
+;; 【返回值】
+;; 如果成员被标记为静默则抛出验证异常
 (defn check-profile-muted
   "Check if the member's email is part of the global bounce report"
   [conn member]
@@ -96,6 +171,16 @@
                 :email email
                 :hint "the profile has reported repeatedly as spam or has bounces"))))
 
+;; 检查邮箱是否在全局退信报告中
+;; 用于验证邮箱是否可接收邮件
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; email - 要检查的邮箱地址
+;; show? - 是否显示真实邮箱地址（否则显示 "private"）
+;;
+;; 【返回值】
+;; 如果邮箱在退信报告中则抛出限制异常
 (defn check-email-bounce
   "Check if the email is part of the global complain report"
   [conn email show?]
@@ -105,6 +190,16 @@
               :email (if show? email "private")
               :hint "this email has been repeatedly reported as bounce")))
 
+;; 检查邮箱是否在全局投诉报告中
+;; 用于验证邮箱是否被标记为垃圾邮件
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; email - 要检查的邮箱地址
+;; show? - 是否显示真实邮箱地址（否则显示 "private"）
+;;
+;; 【返回值】
+;; 如果邮箱在投诉报告中则抛出限制异常
 (defn check-email-spam
   "Check if the member email is part of the global complain report"
   [conn email show?]
@@ -117,6 +212,7 @@
 
 ;; --- Query: Teams
 
+;; 获取用户所属团队的SQL查询（包含权限信息）
 (def sql:get-teams-with-permissions
   "SELECT t.*,
           tp.is_owner,
@@ -129,6 +225,7 @@
       AND tp.profile_id = ?
     ORDER BY tp.created_at ASC")
 
+;; 获取用户所属团队的SQL查询（包含权限和订阅信息）
 (def sql:get-teams-with-permissions-and-subscription
   "SELECT t.*,
           tp.is_owner,
@@ -154,6 +251,14 @@
       AND tp.profile_id = ?
     ORDER BY tp.created_at ASC")
 
+;; 处理团队权限数据
+;; 将数据库返回的权限字段转换为标准权限映射格式
+;;
+;; 【参数】
+;; team - 团队映射，包含 :is-owner、:is-admin、:can-edit 键
+;;
+;; 【返回值】
+;; 转换后的团队映射，权限字段被整合为 :permissions 映射
 (defn process-permissions
   [team]
   (let [is-owner    (:is-owner team)
@@ -167,12 +272,21 @@
         (dissoc :is-owner :is-admin :can-edit)
         (assoc :permissions permissions))))
 
+;; 处理团队的转换函数组合
 (def ^:private
   xform:process-teams
   (comp
    (map decode-row)
    (map process-permissions)))
 
+;; 获取用户所属的所有团队
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; profile-id - 用户ID
+;;
+;; 【返回值】
+;; 用户所属的团队列表，每个团队包含权限信息
 (defn get-teams
   [conn profile-id]
   (let [profile (profile/get-profile conn profile-id)
@@ -195,6 +309,7 @@
       (contains? cf/flags :nitrate)
       (map #(nitrate/add-org-info-to-team cfg % params)))))
 
+;; 获取用户拥有的团队（不包括默认团队）的SQL查询
 (def ^:private sql:get-owned-teams
   "SELECT t.id, t.name,
           (SELECT count(*) FROM team_profile_rel WHERE team_id=t.id) AS total_members,
@@ -204,8 +319,16 @@
     WHERE t.is_default IS false
       AND tpr.is_owner IS true
       AND tpr.profile_id = ?
-      AND t.deleted_at IS NULL")
+    AND t.deleted_at IS NULL")
 
+;; 获取用户拥有的所有团队
+;;
+;; 【参数】
+;; cfg - 配置映射
+;; profile-id - 用户ID
+;;
+;; 【返回值】
+;; 用户拥有的团队列表，包含成员数和编辑者数
 (defn- get-owned-teams
   [cfg profile-id]
   (->> (db/exec! cfg [sql:get-owned-teams profile-id])
@@ -221,6 +344,7 @@
 
 (declare get-team)
 
+;; 获取单个团队的详细SQL（用于CTE子查询）
 (def ^:private schema:get-team
   [:and
    [:map {:title "get-team"}
@@ -231,12 +355,18 @@
           (or (contains? params :id)
               (contains? params :file-id)))]])
 
-(sv/defmethod ::get-team
-  {::doc/added "1.17"
-   ::sm/params schema:get-team}
-  [{:keys [::db/pool]} {:keys [::rpc/profile-id id file-id]}]
-  (get-team pool :profile-id profile-id :team-id id :file-id file-id))
-
+;; 根据ID、文件ID或项目ID获取团队
+;;
+;; 【参数】
+;; conn - 数据库连接或连接池
+;; :profile-id - 用户ID（必填）
+;; :team-id - 团队ID（可选，与file-id和project-id互斥）
+;; :project-id - 项目ID（可选，与team-id和file-id互斥）
+;; :file-id - 文件ID（可选，与team-id和project-id互斥）
+;;
+;; 【返回值】
+;; 团队映射，包含权限信息
+;; 如果未找到则抛出 :not-found 异常
 (defn get-team
   [conn & {:keys [profile-id team-id project-id file-id] :as params}]
 
@@ -287,6 +417,7 @@
 
 ;; --- Query: Team Members
 
+;; 获取团队成员列表的SQL查询
 (def sql:team-members
   "SELECT tp.*,
           p.id,
@@ -299,6 +430,14 @@
      JOIN profile AS p ON (p.id = tp.profile_id)
     WHERE tp.team_id = ?")
 
+;; 获取指定团队的成员列表
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; team-id - 团队ID
+;;
+;; 【返回值】
+;; 团队成员列表，包含成员详细信息
 (defn get-team-members
   [conn team-id]
   (db/exec! conn [sql:team-members team-id]))
@@ -317,9 +456,11 @@
 
 ;; --- Query: Team Users
 
+;; 声明后续定义的函数
 (declare get-users)
 (declare get-team-for-file)
 
+;; 获取团队用户列表的请求模式
 (def ^:private schema:get-team-users
   [:and {:title "get-team-users"}
    [:map
@@ -330,6 +471,15 @@
 
 ;; FIXME: split in two separated requests
 
+;; 获取团队用户列表（通过team-id或file-id）
+;; 团队用户包括：团队成员、直接添加到项目的用户、直接添加到文件的用户
+;;
+;; 【参数】
+;; cfg - 配置映射，包含数据库连接池
+;; params - 参数映射，包含 :profile-id 和 (:team-id 或 :file-id)
+;;
+;; 【返回值】
+;; 团队用户列表
 (sv/defmethod ::get-team-users
   "Get team users by team-id or by file-id"
   {::doc/added "1.17"
@@ -488,6 +638,7 @@
 
 ;; --- Mutation: Create Team
 
+;; 声明后续定义的函数
 (declare create-team)
 (declare create-project)
 (declare create-project-role)
@@ -495,6 +646,7 @@
 (declare ^:private create-team-role)
 (declare ^:private create-team-default-project)
 
+;; 创建团队的请求模式
 (def ^:private schema:create-team
   [:map {:title "create-team"}
    [:name [:string {:max 250}]]
@@ -503,6 +655,8 @@
    [:organization-id {:optional true} ::sm/uuid]
    [:is-default {:optional true} :boolean]])
 
+;; 创建团队的RPC入口点
+;; 首先检查用户是否达到团队数量限制，然后创建团队及关联对象
 (sv/defmethod ::create-team
   {::doc/added "1.17"
    ::sm/params schema:create-team}
@@ -522,6 +676,15 @@
     (with-meta team
       {::audit/props {:id (:id team)}})))
 
+;; 创建完整的团队及其关联对象
+;; 包括团队本身、默认项目（草稿箱）、所有者角色
+;;
+;; 【参数】
+;; cfg-or-conn - 配置映射或数据库连接
+;; params - 参数映射，包含 :name、:features 等
+;;
+;; 【返回值】
+;; 创建的团队映射，包含 :default-project-id
 (defn create-team
   "This is a complete team creation process, it creates the team
   object and all related objects (default role and default project)."
@@ -538,6 +701,14 @@
       (nitrate/set-team-organization cfg-or-conn team params))
     (assoc team :default-project-id (:id project))))
 
+;; 创建团队记录（内部函数）
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; params - 参数映射，包含 :id、:name、:is-default、:features
+;;
+;; 【返回值】
+;; 创建的团队映射（解码后）
 (defn- create-team*
   [conn {:keys [id name is-default features] :as params}]
   (let [id         (or id (uuid/next))
@@ -550,6 +721,14 @@
                                 :is-default is-default})]
     (decode-row team)))
 
+;; 创建团队成员角色关联（内部函数）
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; params - 参数映射，包含 :profile-id、:team-id、:role
+;;
+;; 【返回值】
+;; 创建的角色关联记录
 (defn- create-team-role
   [conn {:keys [profile-id team-id role] :as params}]
   (let [params {:team-id team-id
@@ -557,6 +736,14 @@
     (->> (perms/assign-role-flags params role)
          (db/insert! conn :team-profile-rel))))
 
+;; 创建团队的默认项目（草稿箱）
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; params - 参数映射，包含 :profile-id、:team-id
+;;
+;; 【返回值】
+;; 创建的项目映射
 (defn- create-team-default-project
   [conn {:keys [profile-id team-id] :as params}]
   (let [project {:id (uuid/next)
@@ -573,6 +760,14 @@
 ;; project creation, so it make sense to have this functions in this
 ;; namespace too.
 
+;; 创建项目
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; params - 参数映射，包含 :id、:team-id、:name、:is-default、:created-at、:modified-at
+;;
+;; 【返回值】
+;; 创建的项目映射
 (defn create-project
   [conn {:keys [id team-id name is-default created-at modified-at]}]
   (let [id         (or id (uuid/next))
@@ -585,6 +780,16 @@
                     :modified-at modified-at}]
     (db/insert! conn :project (d/without-nils params))))
 
+;; 创建项目成员角色关联
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; profile-id - 用户ID
+;; project-id - 项目ID
+;; role - 角色（:owner 等）
+;;
+;; 【返回值】
+;; 创建的角色关联记录
 (defn create-project-role
   [conn profile-id project-id role]
   (let [params {:project-id project-id
@@ -594,11 +799,13 @@
 
 ;; --- Mutation: Update Team
 
+;; 更新团队信息的请求模式
 (def ^:private schema:update-team
   [:map {:title "update-team"}
    [:name [:string {:max 250}]]
    [:id ::sm/uuid]])
 
+;; 更新团队名称
 (sv/defmethod ::update-team
   {::doc/added "1.17"
    ::sm/params schema:update-team
@@ -613,6 +820,17 @@
 
 ;; --- Mutation: Leave Team
 
+;; 成员离开团队
+;; 支持两种场景：
+;; 1. 普通成员直接离开
+;; 2. 所有者转让所有权后离开（需要指定 reassign-to）
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; params - 参数映射，包含 :profile-id、:id（团队ID）、:reassign-to（可选，转让给的用户ID）
+;;
+;; 【返回值】
+;; 成功返回 nil，失败抛出异常
 (defn leave-team
   [conn {:keys [profile-id id reassign-to]}]
   (let [perms   (get-permissions conn profile-id id)
@@ -659,11 +877,13 @@
 
     nil))
 
+;; 离开团队的请求模式
 (def ^:private schema:leave-team
   [:map {:title "leave-team"}
    [:id ::sm/uuid]
    [:reassign-to {:optional true} ::sm/uuid]])
 
+;; 离开团队的RPC入口点
 (sv/defmethod ::leave-team
   {::doc/added "1.17"
    ::sm/params schema:leave-team
@@ -673,6 +893,15 @@
 
 ;; --- Mutation: Delete Team
 
+;; 标记团队为删除（逻辑删除）
+;; 团队不会立即物理删除，而是设置删除时间戳，由后台任务处理
+;;
+;; 【参数】
+;; conn - 数据库连接
+;; team - 团队映射，包含 :id
+;;
+;; 【返回值】
+;; 更新后的团队映射
 (defn- delete-team
   "Mark a team for deletion"
   [conn {:keys [id] :as team}]
@@ -695,6 +924,7 @@
                                 :id id}})
     team))
 
+;; 删除团队的请求模式
 (def ^:private schema:delete-team
   [:map {:title "delete-team"}
    [:id ::sm/uuid]])
@@ -716,6 +946,16 @@
 
 ;; --- Mutation: Team Update Role
 
+;; 更新团队成员角色
+;; 所有者或管理员可以修改其他成员的角色
+;; 注意：不能修改所有者的角色，非所有者不能晋升他人为所有者
+;;
+;; 【参数】
+;; cfg - 配置映射，包含 :db/conn 和 :msgbus/msgbus
+;; params - 参数映射，包含 :profile-id、:team-id、:member-id、:role
+;;
+;; 【返回值】
+;; 成功返回 nil，失败抛出异常
 (defn update-team-member-role
   [{:keys [::db/conn ::mbus/msgbus]} {:keys [profile-id team-id member-id role] :as params}]
   ;; We retrieve all team members instead of query the
@@ -769,12 +1009,14 @@
                    :profile-id member-id})
       nil)))
 
+;; 更新团队成员角色的请求模式
 (def ^:private schema:update-team-member-role
   [:map {:title "update-team-member-role"}
    [:team-id ::sm/uuid]
    [:member-id ::sm/uuid]
    [:role types.team/schema:role]])
 
+;; 更新团队成员角色的RPC入口点
 (sv/defmethod ::update-team-member-role
   {::doc/added "1.17"
    ::sm/params schema:update-team-member-role}
@@ -783,11 +1025,21 @@
 
 ;; --- Mutation: Delete Team Member
 
+;; 删除团队成员的请求模式
 (def ^:private schema:delete-team-member
   [:map {:title "delete-team-member"}
    [:team-id ::sm/uuid]
    [:member-id ::sm/uuid]])
 
+;; 删除团队成员
+;; 只有所有者或管理员可以删除成员，不能删除自己
+;;
+;; 【参数】
+;; cfg - 配置映射，包含 :db/conn 和 :msgbus/msgbus
+;; params - 参数映射，包含 :profile-id、:team-id、:member-id
+;;
+;; 【返回值】
+;; 成功返回 nil，失败抛出异常
 (sv/defmethod ::delete-team-member
   {::doc/added "1.17"
    ::sm/params schema:delete-team-member
@@ -817,14 +1069,18 @@
 
 ;; --- Mutation: Update Team Photo
 
+;; 声明后续定义的函数
 (declare upload-photo)
 (declare ^:private update-team-photo)
 
+;; 更新团队头像的请求模式
 (def ^:private schema:update-team-photo
   [:map {:title "update-team-photo"}
    [:team-id ::sm/uuid]
    [:file media/schema:upload]])
 
+;; 更新团队头像的RPC入口点
+;; 验证媒体类型后调用更新函数
 (sv/defmethod ::update-team-photo
   {::doc/added "1.17"
    ::sm/params schema:update-team-photo}
@@ -834,6 +1090,15 @@
   (media/validate-media-type! file #{"image/jpeg" "image/png" "image/webp"})
   (update-team-photo cfg (assoc params :profile-id profile-id)))
 
+;; 更新团队头像
+;; 上传新头像并更新团队的 photo-id，标记旧头像为待清理
+;;
+;; 【参数】
+;; cfg - 配置映射，包含 :db/pool 和 :sto/storage
+;; params - 参数映射，包含 :profile-id、:team-id
+;;
+;; 【返回值】
+;; 更新后的团队映射，包含新的 :photo-id
 (defn update-team-photo
   [{:keys [::db/pool ::sto/storage] :as cfg} {:keys [profile-id team-id] :as params}]
   (let [team  (get-team pool :profile-id profile-id :team-id team-id)

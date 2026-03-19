@@ -1,3 +1,26 @@
+;; =============================================================================
+;; 消息总线 (Message Bus)
+;; =============================================================================
+;;
+;; 【模块概述】
+;; 本模块是消息总线的实现，基于 Redis Pub/Sub 构建。
+;; 提供发布/订阅模式的消息传递机制，支持多租户隔离。
+;; 用于系统内部的实时通信，如 WebSocket 消息推送、任务通知等。
+;;
+;; 【核心概念】
+;; 1. Pub/Sub Pattern - 发布/订阅模式，解耦消息生产者和消费者
+;; 2. Topic - 主题，用于分类消息
+;; 3. Channel - 通道，本地订阅者与 Redis 订阅的桥梁
+;; 4. Multi-tenancy - 多租户支持，通过主题前缀隔离不同租户
+;; 5. Core Async - 使用 core.async 进行异步消息处理
+;;
+;; 【依赖关系】
+;; - app.redis - Redis 客户端
+;; - app.worker - 执行器配置
+;; - promesa.exec.csp - Core Async 通道操作
+;;
+;; =============================================================================
+
 ;; This Source Code Form is subject to the terms of the Mozilla Public
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -30,6 +53,13 @@
 
 
 (defn- prefix-topic
+  "为给定的主题名称添加租户前缀。
+   
+   【参数】
+   topic - 主题名称（字符串）
+   
+   【返回值】
+   带租户前缀的主题名称字符串，格式：\"{tenant}.{topic}\""
   [topic]
   (str prefix "." topic))
 
@@ -44,6 +74,13 @@
 (declare ^:private unsubscribe-channels)
 
 (defn msgbus?
+  "检查给定对象是否实现了 IMsgBus 消息总线协议。
+   
+   【参数】
+   o - 要检查的对象
+   
+   【返回值】
+   如果对象实现了 IMsgBus 协议返回 true，否则返回 false"
   [o]
   (satisfies? IMsgBus o))
 
@@ -51,6 +88,14 @@
  {:type ::msgbus
   :pred msgbus?})
 
+"扩展 Integrant 配置键，设置默认值。
+   
+   【参数】
+   k - 配置键
+   v - 配置值映射
+   
+   【返回值】
+   包含默认配置的映射"
 (defmethod ig/expand-key ::msgbus
   [k v]
   {k (-> (d/without-nils v)
@@ -62,10 +107,30 @@
    ::rds/client
    ::wrk/executor])
 
+"验证消息总线配置参数的有效性。
+   
+   【参数】
+   _ - 配置键（忽略）
+   params - 要验证的参数映射
+   
+   【返回值】
+   验证通过时返回 true，否则抛出断言错误"
 (defmethod ig/assert-key ::msgbus
   [_ params]
   (assert (sm/check schema:params params)))
 
+"初始化消息总线实例。
+   创建 Redis 连接、核心异步通道和 I/O 线程。
+   
+   【参数】
+   _ - 配置键（忽略）
+   cfg - 配置映射，包含：
+         - ::buffer-size - 通道缓冲区大小（默认 128）
+         - ::wrk/executor - 执行器用于异步任务
+         - ::timeout - Redis 连接超时时间
+   
+   【返回值】
+   实现 IMsgBus 协议和 AutoCloseable 接口的消息总线实例"
 (defmethod ig/init-key ::msgbus
   [_ {:keys [::buffer-size ::wrk/executor ::timeout] :as cfg}]
   (l/info :hint "initialize msgbus" :buffer-size buffer-size)
@@ -115,11 +180,30 @@
         (l/debug :hint "purge" :chans (count chans))
         (send-via executor state unsubscribe-channels cfg chans)))))
 
+"停止并关闭消息总线实例。
+   释放所有资源，包括 Redis 连接和核心异步通道。
+   
+   【参数】
+   _ - 配置键（忽略）
+   instance - 要关闭的消息总线实例
+   
+   【返回值】
+   无返回值"
 (defmethod ig/halt-key! ::msgbus
   [_ instance]
   (d/close! instance))
 
 (defn sub!
+  "订阅一个或多个主题，将消息路由到指定的通道。
+   
+   【参数】
+   instance - 消息总线实例
+   :topic - 单个主题名称
+   :topics - 主题名称向量
+   :chan - 接收消息的核心异步通道
+   
+   【返回值】
+   返回 nil"
   [instance & {:keys [topic topics chan]}]
   (assert (satisfies? IMsgBus instance) "expected valid msgbus instance")
   (let [topics (into [] (map prefix-topic) (if topic [topic] topics))]
@@ -127,11 +211,28 @@
     nil))
 
 (defn pub!
+  "发布消息到指定主题。
+   
+   【参数】
+   instance - 消息总线实例
+   :topic - 目标主题名称
+   :message - 要发布的消息（映射）
+   
+   【返回值】
+   返回 nil"
   [instance & {:keys [topic message]}]
   (assert (satisfies? IMsgBus instance) "expected valid msgbus instance")
   (-pub instance topic message))
 
 (defn purge!
+  "取消订阅并关闭指定的通道。
+   
+   【参数】
+   instance - 消息总线实例
+   chans - 要关闭的核心异步通道序列
+   
+   【返回值】
+   返回 nil"
   [instance chans]
   (assert (satisfies? IMsgBus instance) "expected valid msgbus instance")
   (assert (every? sp/chan? chans) "expected a seq of chans")
@@ -141,9 +242,17 @@
 ;; --- IMPL
 
 (defn- conj-subscription
-  "A low level function that is responsible to create on-demand
-  subscriptions on redis. It reuses the same subscription if it is
-  already established."
+  "底层函数，按需创建 Redis 订阅。
+   如果订阅已存在则复用。
+   
+   【参数】
+   nsubs - 当前订阅集合（可能为 nil）
+   cfg - 配置映射
+   topic - 主题名称
+   chan - 本地核心异步通道
+   
+   【返回值】
+   更新后的订阅集合"
   [nsubs cfg topic chan]
   (let [nsubs (if (nil? nsubs) #{chan} (conj nsubs chan))]
     (when (= 1 (count nsubs))
@@ -152,9 +261,17 @@
     nsubs))
 
 (defn- disj-subscription
-  "A low level function responsible on removing subscriptions. The
-  subscription is truly removed from redis once no single local
-  subscription is look for it."
+  "底层函数，移除订阅。
+   只有当没有任何本地订阅时才真正从 Redis 移除订阅。
+   
+   【参数】
+   nsubs - 当前订阅集合
+   cfg - 配置映射
+   topic - 主题名称
+   chan - 本地核心异步通道
+   
+   【返回值】
+   更新后的订阅集合"
   [nsubs cfg topic chan]
   (let [nsubs (disj nsubs chan)]
     (when (empty? nsubs)
@@ -163,7 +280,16 @@
     nsubs))
 
 (defn- subscribe-to-topics
-  "Function responsible to attach local subscription to the state."
+  "将本地订阅附加到状态管理器。
+   
+   【参数】
+   state - 代理状态
+   cfg - 配置映射
+   topics - 主题名称向量
+   chan - 本地核心异步通道
+   
+   【返回值】
+   更新后的状态"
   [state cfg topics chan]
   (let [state (update state :chans assoc chan topics)]
     (reduce (fn [state topic]
@@ -172,8 +298,15 @@
             topics)))
 
 (defn- unsubscribe-channel
-  "Auxiliary function responsible on removing a single local
-  subscription from the state."
+  "辅助函数，从状态中移除单个本地订阅。
+   
+   【参数】
+   state - 代理状态
+   cfg - 配置映射
+   chan - 要移除的核心异步通道
+   
+   【返回值】
+   更新后的状态"
   [state cfg chan]
   (let [topics (get-in state [:chans chan])
         state  (update state :chans dissoc chan)]
@@ -183,13 +316,29 @@
             topics)))
 
 (defn- unsubscribe-channels
-  "Function responsible from detach from state a seq of channels,
-  useful when client disconnects or in-bulk unsubscribe
-  operations. Intended to be executed in agent."
+  "从状态中分离多个通道的订阅。
+   用于客户端断开连接或批量取消订阅操作。
+   计划在代理中执行。
+   
+   【参数】
+   state - 代理状态
+   cfg - 配置映射
+   channels - 要移除的核心异步通道序列
+   
+   【返回值】
+   更新后的状态"
   [state cfg channels]
   (reduce #(unsubscribe-channel %1 cfg %2) state channels))
 
 (defn- create-listener
+  "创建 Redis 消息监听器。
+   使用滑动缓冲区处理背压情况。
+   
+   【参数】
+   rcv-ch - 接收消息的核心异步通道
+   
+   【返回值】
+   包含 on-message 回调的映射"
   [rcv-ch]
   {:on-message (fn [_ topic message]
                  ;; There are no back pressure, so we use a slidding
@@ -200,10 +349,19 @@
                      (l/warn :msg "dropping message on subscription loop"))))})
 
 (defn- process-input
+  "处理接收到的消息，将消息路由到订阅的通道。
+   
+   【参数】
+   cfg - 配置映射
+   topic - 消息主题
+   message - 消息内容
+   
+   【返回值】
+   无返回值"
   [{:keys [::state ::wrk/executor] :as cfg} topic message]
   (let [chans (get-in @state [:topics topic])]
     (when-let [closed (loop [chans  (seq chans)
-                             closed #{}]
+                            closed #{}]
                         (if-let [ch (first chans)]
                           (if (sp/put! ch message)
                             (recur (rest chans) closed)
@@ -212,6 +370,19 @@
       (send-via executor state unsubscribe-channels cfg closed))))
 
 
+"启动消息总线的 I/O 循环线程。
+   负责处理 Redis 发布/订阅消息和本地通道的读写。
+   
+   【参数】
+   cfg - 配置映射，包含：
+         - ::sconn - Redis Pub/Sub 连接
+         - ::rcv-ch - 接收通道
+         - ::pub-ch - 发布通道
+         - ::state - 代理状态
+         - ::wrk/executor - 执行器
+   
+   【返回值】
+   返回启动的线程"
 (defn start-io-loop
   [{:keys [::sconn ::rcv-ch ::pub-ch ::state ::wrk/executor] :as cfg}]
   (rds/add-listener sconn (create-listener rcv-ch))
@@ -259,8 +430,15 @@
         (l/debug :hint "io-loop thread terminated")))))
 
 (defn- redis-pub
-  "Publish a message to the redis server. Asynchronous operation,
-  intended to be used in core.async go blocks."
+  "将消息发布到 Redis 服务器。
+   异步操作，计划在 core.async go 块中使用。
+   
+   【参数】
+   cfg - 配置映射，包含 ::pconn（Redis 发布连接）
+   {:keys [topic message]} - 包含主题和消息内容的映射
+   
+   【返回值】
+   无返回值"
   [{:keys [::pconn] :as cfg} {:keys [topic message]}]
   (try
     (rds/publish pconn topic (t/encode-str message))
@@ -272,8 +450,14 @@
                :cause cause))))
 
 (defn- redis-sub
-  "Create redis subscription. Blocking operation, intended to be used
-  inside an agent."
+  "创建 Redis 订阅。阻塞操作，计划在代理中使用。
+   
+   【参数】
+   cfg - 配置映射，包含 ::sconn（Redis Pub/Sub 连接）
+   topic - 要订阅的主题名称
+   
+   【返回值】
+   无返回值"
   [{:keys [::sconn] :as cfg} topic]
   (try
     (rds/subscribe sconn [topic])
@@ -283,8 +467,14 @@
       (l/trace :hint "exception on subscribing" :topic topic :cause cause))))
 
 (defn- redis-unsub
-  "Removes redis subscription. Blocking operation, intended to be used
-  inside an agent."
+  "移除 Redis 订阅。阻塞操作，计划在代理中使用。
+   
+   【参数】
+   cfg - 配置映射，包含 ::sconn（Redis Pub/Sub 连接）
+   topic - 要取消订阅的主题名称
+   
+   【返回值】
+   无返回值"
   [{:keys [::sconn] :as cfg} topic]
   (try
     (rds/unsubscribe sconn [topic])

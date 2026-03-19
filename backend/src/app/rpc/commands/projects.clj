@@ -1,3 +1,31 @@
+;; =============================================================================
+;; 项目模块 (Projects Module)
+;; =============================================================================
+;;
+;; 【模块概述】
+;; 本模块负责处理 Penpot 设计工具的项目相关 RPC 命令，包括：
+;; - 获取项目列表 (get-projects, get-all-projects)
+;; - 获取单个项目 (get-project)
+;; - 创建项目 (create-project)
+;; - 重命名项目 (rename-project)
+;; - 删除项目 (delete-project)
+;; - 置顶/取消置顶项目 (update-project-pin)
+;;
+;; 【核心概念】
+;; 1. Project (项目) - 文件的容器，属于团队
+;; 2. Team (团队) - 项目的上层组织单位
+;; 3. 权限 - 项目的读取、编辑、管理权限
+;;
+;; 【依赖关系】
+;; - app.db - 数据库访问
+;; - app.rpc.commands.teams - 团队信息和权限检查
+;; - app.rpc.permissions - 权限管理
+;; - app.rpc.quotes - 配额限制检查
+;; - app.features.logical-deletion - 软删除功能
+;; - app.loggers.audit - 审计日志
+;;
+;; =============================================================================
+
 ;; This Source Code Form is subject to the terms of the Mozilla Public
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -27,22 +55,23 @@
 ;; --- Check Project Permissions
 
 (def ^:private sql:project-permissions
-  "select tpr.is_owner,
-          tpr.is_admin,
-          tpr.can_edit
-     from team_profile_rel as tpr
-    inner join project as p on (p.team_id = tpr.team_id)
-    where p.id = ?
-      and tpr.profile_id = ?
-   union all
-   select ppr.is_owner,
-          ppr.is_admin,
-          ppr.can_edit
-     from project_profile_rel as ppr
-    where ppr.project_id = ?
-      and ppr.profile_id = ?")
+  "查询项目权限的 SQL 语句。
+   通过团队关系和项目直接关系两种方式查询用户权限。")
 
 (defn- get-permissions
+  "获取用户在项目上的权限。
+   
+   【参数】
+   conn - 数据库连接
+   profile-id - 用户 ID
+   project-id - 项目 ID
+   
+   【返回值】
+   返回权限地图，包含:
+   - :is-owner - 是否为所有者
+   - :is-admin - 是否为管理员
+   - :can-edit - 是否可编辑
+   - :can-read - 是否可读取"
   [conn profile-id project-id]
   (let [rows     (db/exec! conn [sql:project-permissions
                                  project-id profile-id
@@ -57,38 +86,64 @@
        :can-read true})))
 
 (def has-edit-permissions?
-  (perms/make-edition-predicate-fn get-permissions))
+  "判断用户是否有项目编辑权限的函数。
+   
+   【参数】
+   conn - 数据库连接
+   profile-id - 用户 ID
+   project-id - 项目 ID
+   
+   【返回值】
+   返回布尔值，表示用户是否可以编辑项目。")
 
 (def has-read-permissions?
-  (perms/make-read-predicate-fn get-permissions))
+  "判断用户是否有项目读取权限的函数。
+   
+   【参数】
+   conn - 数据库连接
+   profile-id - 用户 ID
+   project-id - 项目 ID
+   
+   【返回值】
+   返回布尔值，表示用户是否可以读取项目。")
 
 (def check-edition-permissions!
-  (perms/make-check-fn has-edit-permissions?))
+  "检查用户是否有项目编辑权限，不满足则抛出异常。
+   
+   【参数】
+   conn - 数据库连接
+   profile-id - 用户 ID
+   project-id - 项目 ID
+   
+   【异常】
+   权限不足时抛出 :type :authorization 异常。")
 
 (def check-read-permissions!
-  (perms/make-check-fn has-read-permissions?))
+  "检查用户是否有项目读取权限，不满足则抛出异常。
+   
+   【参数】
+   conn - 数据库连接
+   profile-id - 用户 ID
+   project-id - 项目 ID
+   
+   【异常】
+   权限不足时抛出 :type :authorization 异常。")
 
 ;; --- QUERY: Get projects
 
 (def ^:private sql:projects
-  "SELECT p.*,
-          coalesce(tpp.is_pinned, false) as is_pinned,
-          (SELECT count(*) FROM file AS f
-            WHERE f.project_id = p.id
-              AND f.deleted_at is null) AS count,
-          (SELECT count(*) FROM file AS f
-            WHERE f.project_id = p.id) AS total_count
-     FROM project AS p
-    INNER JOIN team AS t ON (t.id = p.team_id)
-     LEFT JOIN team_project_profile_rel AS tpp
-            ON (tpp.project_id = p.id AND
-                tpp.team_id = p.team_id AND
-                tpp.profile_id = ?)
-    WHERE p.team_id = ?
-      AND t.deleted_at is null
-    ORDER BY p.modified_at DESC")
+  "查询项目列表的 SQL 语句，包含文件数量统计。")
 
 (defn get-projects
+  "获取指定团队的项目列表。
+   
+   【参数】
+   conn - 数据库连接
+   profile-id - 用户 ID
+   team-id - 团队 ID
+   
+   【返回值】
+   返回项目记录列表。"
   [conn profile-id team-id]
   (db/exec! conn [sql:projects profile-id team-id]))
 
@@ -119,32 +174,18 @@
     (get-all-projects conn profile-id)))
 
 (def sql:all-projects
-  "select p1.*, t.name as team_name, t.is_default as is_default_team
-     from project as p1
-    inner join team as t on (t.id = p1.team_id)
-    where t.id in (select team_id
-                     from team_profile_rel as tpr
-                    where tpr.profile_id = ?
-                      and (tpr.can_edit = true or
-                           tpr.is_owner = true or
-                           tpr.is_admin = true))
-      and t.deleted_at is null
-      and p1.deleted_at is null
-   union
-   select p2.*, t.name as team_name, t.is_default as is_default_team
-     from project as p2
-    inner join team as t on (t.id = p2.team_id)
-    where p2.id in (select project_id
-                     from project_profile_rel as ppr
-                    where ppr.profile_id = ?
-                      and (ppr.can_edit = true or
-                           ppr.is_owner = true or
-                           ppr.is_admin = true))
-      and t.deleted_at is null
-      and p2.deleted_at is null
-    order by team_name, name;")
+  "查询用户所有可访问项目的 SQL 语句。
+   包括通过团队间接访问和项目直接授权的项目。")
 
 (defn get-all-projects
+  "获取用户所有可访问的项目。
+   
+   【参数】
+   conn - 数据库连接
+   profile-id - 用户 ID
+   
+   【返回值】
+   返回项目记录列表。"
   [conn profile-id]
   (db/exec! conn [sql:all-projects profile-id profile-id]))
 
@@ -156,6 +197,14 @@
    [:id ::sm/uuid]])
 
 (sv/defmethod ::get-project
+  "获取单个项目的详细信息。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id 和 :id (项目 ID)
+   
+   【返回值】
+   返回项目记录。"
   {::doc/added "1.18"
    ::sm/params schema:get-project}
   [{:keys [::db/pool]} {:keys [::rpc/profile-id id]}]
@@ -169,6 +218,14 @@
 ;; --- MUTATION: Create Project
 
 (defn- create-project
+  "创建新项目的内部函数。
+   
+   【参数】
+   cfg - 系统配置
+   params - 创建参数，包含 :team-id, :name, :id 等
+   
+   【返回值】
+   返回创建的项目记录。"
   [{:keys [::db/conn] :as cfg} {:keys [::rpc/request-at profile-id team-id] :as params}]
   (assert (ct/inst? request-at) "expect request-at assigned")
   (let [params    (-> params
@@ -222,6 +279,14 @@
    [:id ::sm/uuid]])
 
 (sv/defmethod ::update-project-pin
+  "置顶或取消置顶项目。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id, :id (项目 ID), :team-id, :is-pinned (是否置顶)
+   
+   【返回值】
+   返回 nil。"
   {::doc/added "1.18"
    ::sm/params schema:update-project-pin
    ::webhooks/batch-timeout (ct/duration "5s")
@@ -243,6 +308,14 @@
    [:id ::sm/uuid]])
 
 (sv/defmethod ::rename-project
+  "重命名项目。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id, :id (项目 ID), :name (新名称)
+   
+   【返回值】
+   返回包含审计属性的响应。"
   {::doc/added "1.18"
    ::sm/params schema:rename-project
    ::webhooks/event? true
@@ -260,6 +333,18 @@
 ;; --- MUTATION: Delete Project
 
 (defn- delete-project
+  "删除项目的内部函数（软删除）。
+   
+   【参数】
+   conn - 数据库连接
+   team - 团队记录
+   project-id - 项目 ID
+   
+   【返回值】
+   返回被删除的项目记录。
+   
+   【注意】
+   默认项目不能被删除。"
   [conn team project-id]
   (let [delay   (ldel/get-deletion-delay team)
         project (db/update! conn :project

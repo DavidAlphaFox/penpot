@@ -4,6 +4,29 @@
 ;;
 ;; Copyright (c) KALEIDOS INC
 
+;; =============================================================================
+;; 数据库迁移 (Database Migrations)
+;; =============================================================================
+;;
+;; 【模块概述】
+;; 本模块负责管理数据库迁移。
+;; 定义了所有数据库 schema 变更的迁移脚本，按编号顺序执行。
+;; 支持 SQL 文件迁移和 Clojure 函数迁移两种方式。
+;;
+;; 【核心概念】
+;; 1. Migration - 数据库结构变更的版本化脚本
+;; 2. SQL Migration - 使用 SQL 文件定义的迁移
+;; 3. Clojure Migration - 使用 Clojure 函数定义的迁移（用于复杂数据转换）
+;; 4. Integrant - 使用 Integrant 框架在应用启动时自动执行迁移
+;;
+;; 【依赖关系】
+;; - app.db - 数据库访问层
+;; - app.util.migrations - 迁移工具函数
+;; - app.migrations.clj.migration-0023 - Clojure 迁移示例（老页面和文件适配）
+;; - app.migrations.clj.migration-0145 - Clojure 迁移示例（修复插件 URI）
+;;
+;; =============================================================================
+
 (ns app.migrations
   (:require
    [app.common.data.macros :as dm]
@@ -14,6 +37,19 @@
    [app.util.migrations :as mg]
    [integrant.core :as ig]))
 
+"数据库迁移定义向量。
+   包含所有数据库 schema 变更，按编号顺序排列。
+   每个迁移项包含：
+   - :name - 迁移名称（格式：0000X-描述）
+   - :fn - 迁移函数（SQL 资源路径或 Clojure 函数）
+
+   【示例】
+   {:name \"0001-add-extensions\"
+    :fn (mg/resource \"app/migrations/sql/0001-add-extensions.sql\")}
+
+   【迁移类型】
+   1. SQL 迁移 - 使用 (mg/resource \"path/to/sql\") 加载 SQL 文件
+   2. Clojure 迁移 - 直接引用 Clojure 函数，如 mg0023/migrate"
 (def migrations
   [{:name "0001-add-extensions"
     :fn (mg/resource "app/migrations/sql/0001-add-extensions.sql")}
@@ -469,15 +505,41 @@
     :fn (mg/resource "app/migrations/sql/0146-mod-access-token-table.sql")}])
 
 (defn apply-migrations!
+  "执行数据库迁移。
+   
+   【参数】
+   pool - 数据库连接池
+   name - 迁移名称（用于记录）
+   migrations - 要执行的迁移向量
+   
+   【返回值】
+   无返回值"
   [pool name migrations]
   (dm/with-open [conn (db/open pool)]
     (mg/setup! conn)
     (mg/migrate! conn {:name name :steps migrations})))
 
+"验证迁移配置参数的有效性。
+   
+   【参数】
+   _ - 配置键（忽略）
+   params - 要验证的参数映射，必须包含 ::db/pool
+   
+   【返回值】
+   验证通过时返回 true，否则抛出断言错误"
 (defmethod ig/assert-key ::migrations
   [_ {:keys [::db/pool]}]
   (assert (db/pool? pool) "expected valid pool"))
 
+"初始化并执行数据库迁移。
+   在应用启动时自动调用，仅在非只读模式下执行迁移。
+   
+   【参数】
+   module - 模块标识符
+   {:keys [::db/pool]} - 配置映射，必须包含数据库连接池
+   
+   【返回值】
+   无返回值"
 (defmethod ig/init-key ::migrations
   [module {:keys [::db/pool]}]
   (when-not (db/read-only? pool)

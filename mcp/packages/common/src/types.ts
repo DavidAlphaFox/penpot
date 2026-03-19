@@ -1,5 +1,25 @@
 /**
- * Result of a plugin task execution.
+ * =============================================================================
+ * MCP 通用类型定义模块 (MCP Common Types)
+ * =============================================================================
+ *
+ * 【模块概述】
+ * 本模块定义了 MCP 服务器和插件之间共享的类型定义：
+ * - 插件任务请求/响应结构
+ * - 执行代码任务的参数和结果类型
+ *
+ * 【核心概念】
+ * 1. PluginTaskRequest - 从服务器发送到插件的请求消息
+ * 2. PluginTaskResponse - 从插件返回到服务器的响应消息
+ * 3. PluginTaskResult - 任务执行结果的包装器
+ * 4. ExecuteCodeTaskParams - 执行代码任务的参数（包含 JavaScript 代码）
+ * 5. ExecuteCodeTaskResultData - 执行代码任务的结果数据（包含返回值和控制台日志）
+ *
+ * 【依赖关系】
+ * - 无外部依赖，仅为类型定义
+ *
+ * =============================================================================
+ */
  *
  * Contains the outcome status of a task and any additional result data.
  */

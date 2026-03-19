@@ -1,3 +1,26 @@
+//! =============================================================================
+//! 渲染模块 (Render Module)
+//! =============================================================================
+//!
+//! 【模块概述】
+//! 本模块是渲染引擎的核心，负责将 Shape 数据绘制到 Skia 画布上。
+//! 包含瓦片管理、表面管理、字体管理、图像管理等功能。
+//!
+//! 【核心概念】
+//! 1. 瓦片渲染 (Tile Rendering) - 将视口分割为 512x512 瓦片独立渲染
+//! 2. 表面管理 (Surface Management) - 多种渲染表面（填充、描边、阴影等）
+//! 3. 焦点模式 (Focus Mode) - 选择性高亮渲染特定形状
+//! 4. 嵌套状态栈 (Nested State Stacks) - 管理组填充、模糊、阴影的嵌套继承
+//! 5. GPU 状态 (GPU State) - WebGL 上下文管理
+//!
+//! 【依赖关系】
+//! - skia_safe - Skia 图形库
+//! - shapes 模块 - 形状定义和数据
+//! - tiles 模块 - 瓦片系统
+//! - view::Viewbox - 视口管理
+//!
+//! =============================================================================
+
 mod debug;
 mod fills;
 pub mod filters;
@@ -35,26 +58,39 @@ use crate::wapi;
 pub use fonts::*;
 pub use images::*;
 
-// This is the extra area used for tile rendering (tiles beyond viewport).
-// Higher values pre-render more tiles, reducing empty squares during pan but using more memory.
+/// 视口兴趣区域阈值 - 超出视口的额外瓦片数量
 const VIEWPORT_INTEREST_AREA_THRESHOLD: i32 = 3;
+/// 最大阻塞时间（毫秒）- 渲染循环超过此时间会暂停
 const MAX_BLOCKING_TIME_MS: i32 = 32;
+/// 节点批量阈值
 const NODE_BATCH_THRESHOLD: i32 = 3;
+/// 模糊降采样阈值
 const BLUR_DOWNSCALE_THRESHOLD: f32 = 8.0;
 
+/// 裁剪栈类型别名
 type ClipStack = Vec<(Rect, Option<Corners>, Matrix)>;
 
+/// 节点渲染状态
+///
+/// # 字段说明
+/// - `id`: 形状 UUID
+/// - `visited_children`: 是否已遍历所有子元素
+/// - `clip_bounds`: 框架内容的裁剪边界
+/// - `visited_mask`: 是否已绘制遮罩
+/// - `mask`: 是否正在绘制遮罩形状
+/// - `flattened`: 是否已展平
 pub struct NodeRenderState {
+    /// 形状 UUID
     pub id: Uuid,
-    // We use this bool to keep that we've traversed all the children inside this node.
+    /// 是否已遍历所有子元素
     visited_children: bool,
-    // This is used to clip the content of frames.
+    /// 框架内容的裁剪边界
     clip_bounds: Option<ClipStack>,
-    // This is a flag to indicate that we've already drawn the mask of a masked group.
+    /// 是否已绘制遮罩
     visited_mask: bool,
-    // This bool indicates that we're drawing the mask shape.
+    /// 是否正在绘制遮罩形状
     mask: bool,
-    // True when this container was flattened (enter/exit skipped).
+    /// 是否已展平（跳过进入/退出）
     flattened: bool,
 }
 
@@ -196,26 +232,24 @@ impl NodeRenderState {
     }
 }
 
-/// Represents the "focus mode" state used during rendering.
+/// 焦点模式结构体
 ///
-/// Focus mode allows selectively highlighting or isolating specific shapes (UUIDs)
-/// during the render pass. It maintains a list of shapes to focus and tracks
-/// whether the current rendering context is inside a focused element.
+/// 焦点模式允许在渲染过程中选择性地高亮或隔离特定形状。
 ///
-/// # Focus Propagation
-/// If a shape is in focus, all its nested content
-/// is also considered to be in focus for the duration of the render traversal. Focus
-/// state propagates *downward* through the tree while rendering.
+/// # 焦点传播
+/// 如果一个形状处于焦点状态，其所有嵌套内容在渲染遍历期间也被视为处于焦点状态。
+/// 焦点状态在渲染时向下传播。
 ///
-/// # Usage
-/// - `set_shapes(...)` to activate focus mode for specific elements and their anidated content.
-/// - `clear()` to disable focus mode.
-/// - `reset()` should be called at the beginning of the render loop.
-/// - `enter(...)` / `exit(...)` should be called when entering and leaving shape
-///   render contexts.
-/// - `is_active()` returns whether the current shape is being rendered in focus.
+/// # 用法
+/// - `set_shapes(...)` - 激活特定元素的焦点模式
+/// - `clear()` - 禁用焦点模式
+/// - `reset()` - 在渲染循环开始时调用
+/// - `enter(...)` / `exit(...)` - 进入和离开形状渲染上下文时调用
+/// - `is_active()` - 返回当前形状是否正在被焦点渲染
 pub struct FocusMode {
+    /// 要聚焦的形状 UUID 列表
     shapes: Vec<Uuid>,
+    /// 是否处于焦点状态
     active: bool,
 }
 
@@ -263,46 +297,88 @@ impl FocusMode {
     }
 }
 
+/// 渲染状态结构体
+///
+/// # 字段说明
+/// - `gpu_state`: GPU 状态
+/// - `options`: 渲染选项
+/// - `surfaces`: 渲染表面
+/// - `fonts`: 字体存储
+/// - `viewbox`: 当前视口
+/// - `cached_viewbox`: 缓存的视口（用于导航）
+/// - `images`: 图像存储
+/// - `background_color`: 背景颜色
+/// - `render_request_id`: 当前 requestAnimationFrame ID
+/// - `render_in_progress`: 是否有待处理的帧
+/// - `pending_nodes`: 待渲染的节点栈
+/// - `current_tile`: 当前瓦片
+/// - `tiles`: 瓦片哈希图
+/// - `focus_mode`: 焦点模式
+/// - `nested_fills`: 嵌套填充栈
+/// - `nested_blurs`: 嵌套模糊栈
+/// - `nested_shadows`: 嵌套阴影栈
+/// - `preview_mode`: 预览模式
 pub(crate) struct RenderState {
+    /// GPU 状态
     gpu_state: GpuState,
+    /// 渲染选项
     pub options: RenderOptions,
+    /// 渲染表面
     pub surfaces: Surfaces,
+    /// 字体存储
     pub fonts: FontStore,
+    /// 当前视口
     pub viewbox: Viewbox,
+    /// 缓存的视口
     pub cached_viewbox: Viewbox,
+    /// 图像存储
     pub images: ImageStore,
+    /// 背景颜色
     pub background_color: skia::Color,
-    // Identifier of the current requestAnimationFrame call, if any.
+    /// 当前 requestAnimationFrame ID
     pub render_request_id: Option<i32>,
-    // Indicates whether the rendering process has pending frames.
+    /// 是否有待处理的帧
     pub render_in_progress: bool,
-    // Stack of nodes pending to be rendered.
+    /// 待渲染的节点栈
     pending_nodes: Vec<NodeRenderState>,
+    /// 当前瓦片
     pub current_tile: Option<tiles::Tile>,
+    /// 采样选项
     pub sampling_options: skia::SamplingOptions,
+    /// 渲染区域
     pub render_area: Rect,
+    /// 瓦片视口
     pub tile_viewbox: tiles::TileViewbox,
+    /// 瓦片哈希图
     pub tiles: tiles::TileHashMap,
+    /// 待处理瓦片
     pub pending_tiles: PendingTiles,
-    // nested_fills maintains a stack of group  fills that apply to nested shapes
-    // without their own fill definitions. This is necessary because in SVG, a group's `fill`
-    // can affect its child elements if they don't specify one themselves. If the planned
-    // migration to remove group-level fills is completed, this code should be removed.
-    // Frames contained in groups must reset this nested_fills stack pushing a new empty vector.
+    /// 嵌套填充栈
     pub nested_fills: Vec<Vec<Fill>>,
-    pub nested_blurs: Vec<Option<Blur>>, // FIXME: why is this an option?
+    /// 嵌套模糊栈
+    pub nested_blurs: Vec<Option<Blur>>,
+    /// 嵌套阴影栈
     pub nested_shadows: Vec<Vec<Shadow>>,
+    /// 显示网格
     pub show_grid: Option<Uuid>,
+    /// 焦点模式
     pub focus_mode: FocusMode,
+    /// 已触碰的形状 ID
     pub touched_ids: HashSet<Uuid>,
-    /// Temporary flag used for off-screen passes (drop-shadow masks, filter surfaces, etc.)
-    /// where we must render shapes without inheriting ancestor layer blurs. Toggle it through
-    /// `with_nested_blurs_suppressed` to ensure it's always restored.
+    /// 是否忽略嵌套模糊
     pub ignore_nested_blurs: bool,
-    /// Preview render mode - when true, uses simplified rendering for progressive loading
+    /// 预览渲染模式
     pub preview_mode: bool,
 }
 
+/// 获取缓存大小
+///
+/// # 参数
+/// - `viewbox`: 视口
+/// - `scale`: 缩放级别
+///
+/// # 返回值
+/// 缓存所需的 ISize
 pub fn get_cache_size(viewbox: Viewbox, scale: f32) -> skia::ISize {
     // First we retrieve the extended area of the viewport that we could render.
     let TileRect(isx, isy, iex, iey) = tiles::get_tiles_for_viewbox_with_interest(
@@ -376,14 +452,10 @@ impl RenderState {
         }
     }
 
-    /// Combines every visible layer blur currently active (ancestors + shape)
-    /// into a single equivalent blur. Layer blur radii compound by adding their
-    /// variances (σ² = radius²), so we:
-    ///   1. Convert each blur radius into variance via `blur_variance`.
-    ///   2. Sum all variances.
-    ///   3. Convert the total variance back to a radius with `blur_from_variance`.
+    /// 合并所有当前激活的层模糊
     ///
-    /// This keeps blur math consistent everywhere we need to merge blur sources.
+    /// # 说明
+    /// 层模糊半径通过添加方差 (σ² = radius²) 来复合。
     fn combined_layer_blur(&self, shape_blur: Option<Blur>) -> Option<Blur> {
         let mut total = 0.;
 
@@ -1244,8 +1316,10 @@ impl RenderState {
         performance::end_timed_log!("render_from_cache", _start);
     }
 
-    /// Render a preview of the shapes during loading.
-    /// This rebuilds tiles for touched shapes and renders synchronously.
+    /// 渲染预览
+    ///
+    /// # 说明
+    /// 在加载期间渲染形状预览。启用快速模式跳过昂贵效果，重建已触碰的瓦片并同步渲染。
     pub fn render_preview(&mut self, tree: ShapesPoolRef, timestamp: i32) -> Result<(), String> {
         let _start = performance::begin_timed_log!("render_preview");
         performance::begin_measure!("render_preview");

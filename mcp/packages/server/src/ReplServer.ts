@@ -1,4 +1,25 @@
-import express from "express";
+/**
+ * =============================================================================
+ * REPL 开发调试服务器模块 (REPL Development Server)
+ * =============================================================================
+ *
+ * 【模块概述】
+ * 本模块提供了一个基于 Web 的 REPL（Read-Eval-Print-Loop）界面，
+ * 允许开发者通过浏览器输入 JavaScript 代码并通过 PluginBridge 执行。
+ * 主要用于开发和调试 Penpot 插件 API 调用。
+ *
+ * 【核心概念】
+ * 1. Express - 轻量级 Web 服务器框架
+ * 2. REPL 界面 - 交互式代码执行界面，包含命令历史和日志显示
+ * 3. ExecuteCodePluginTask - 通过插件执行代码的任务
+ *
+ * 【依赖关系】
+ * - express - Web 服务器框架
+ * - PluginBridge - 插件桥接器，用于执行代码任务
+ * - ExecuteCodePluginTask - 代码执行任务类
+ *
+ * =============================================================================
+ */
 import path from "path";
 import { fileURLToPath } from "url";
 import { PluginBridge } from "./PluginBridge";
@@ -19,6 +40,12 @@ export class ReplServer {
     private readonly port: number;
     private server: any;
 
+    /**
+     * 创建 REPL 服务器实例
+     *
+     * @param pluginBridge - 插件桥接器实例，用于执行代码任务
+     * @param port - REPL 服务器监听端口（默认：4403）
+     */
     constructor(
         private readonly pluginBridge: PluginBridge,
         port: number = 4403
@@ -84,6 +111,13 @@ export class ReplServer {
      *
      * Begins listening on the configured port and logs server startup information.
      */
+    /**
+     * 启动 REPL Web 服务器
+     *
+     * 在指定端口启动 Express 服务器，监听 REPL 界面和 API 端点请求。
+     *
+     * @returns Promise<void> - 服务器启动完成后解析
+     */
     public async start(): Promise<void> {
         return new Promise((resolve) => {
             this.server = this.app.listen(this.port, () => {
@@ -96,6 +130,13 @@ export class ReplServer {
 
     /**
      * Stops the REPL web server.
+     */
+    /**
+     * 停止 REPL Web 服务器
+     *
+     * 关闭 Express 服务器，停止接受新的连接请求。
+     *
+     * @returns Promise<void> - 服务器关闭完成后解析
      */
     public async stop(): Promise<void> {
         if (this.server) {

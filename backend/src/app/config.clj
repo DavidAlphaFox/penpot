@@ -1,3 +1,25 @@
+;; =============================================================================
+;; 配置管理 (Configuration Management)
+;; =============================================================================
+;;
+;; 【模块概述】
+;; 本模块负责管理和验证应用程序的所有配置选项。配置从环境变量中读取，
+;; 并使用 Malli  schema 进行验证。提供配置获取接口，支持默认值和动态配置更新。
+;;
+;; 【核心概念】
+;; 1. 环境变量前缀 - 配置使用 PENPOT_ 前缀，环境变量自动转换
+;; 2. Malli Schema - 使用 Malli 进行配置验证和类型转换
+;; 3. Feature Flags - 功能标志，用于动态启用/禁用功能
+;; 4. 配置默认值 - 提供合理的默认值配置
+;;
+;; 【依赖关系】
+;; - environ.core - 环境变量读取
+;; - app.common.flags - 功能标志管理
+;; - app.common.schema - Malli schema 工具
+;; - integrant.core - Integrant 框架集成
+;;
+;; =============================================================================
+
 ;; This Source Code Form is subject to the terms of the Mozilla Public
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -243,6 +265,14 @@
     [:objects-storage-s3-endpoint {:optional true} ::sm/uri]]))
 
 (defn- parse-flags
+  "解析配置中的功能标志。
+   
+   【参数】
+   config - 配置映射，包含 :flags 和 :public-uri 字段
+   
+   【返回值】
+   返回解析后的功能标志集合。如果 public-uri 不是 localhost 的 http 地址，
+   会自动添加 :disable-secure-session-cookies 标志。"
   [config]
   (let [public-uri  (c/get config :public-uri)
         public-uri  (some-> public-uri (u/uri))
@@ -254,6 +284,13 @@
     (flags/parse flags/default extra-flags (:flags config))))
 
 (defn read-env
+  "从环境变量中读取配置。
+   
+   【参数】
+   prefix - 环境变量前缀，如 \"penpot\" 会读取 PENPOT_* 开头的变量
+   
+   【返回值】
+   返回一个映射，将去掉前缀的键名（keyword 格式）映射到对应的环境变量值"
   [prefix]
   (let [prefix (str prefix "-")
         len    (count prefix)]
@@ -265,12 +302,15 @@
      {}
      env)))
 
+;; 配置解码器：将原始配置值转换为 Malli schema 定义的类型
 (def decode-config
   (sm/decoder schema:config sm/string-transformer))
 
+;; 配置验证器：检查配置是否符合 schema:config 定义
 (def validate-config
   (sm/validator schema:config))
 
+;; 配置解释器：生成配置验证错误的详细说明
 (def explain-config
   (sm/explainer schema:config))
 
@@ -282,17 +322,33 @@
        (merge default)
        (decode-config)))
 
+;; 应用程序版本：从 version.txt 资源文件读取，解析为版本对象
 (def version
   (v/parse (or (some-> (io/resource "version.txt")
                        (slurp)
                        (str/trim))
                "%version%")))
 
+;; 全局配置绑定：使用 defonce 确保只初始化一次
+;; 可在测试中使用 alter-var-root 动态绑定不同的配置
 (defonce ^:dynamic config (read-config :default default))
+
+;; 全局功能标志绑定：使用 defonce 确保只初始化一次
+;; 存储解析后的功能标志集合
 (defonce ^:dynamic flags (parse-flags config))
 
 (defn validate!
-  "Validate the currently loaded configuration data."
+  "验证当前加载的配置数据。
+   
+   【功能】
+   使用 Malli validator 验证配置是否符合 schema:config 定义。
+   如果验证失败，打印详细的错误信息并根据 exit-on-error? 决定是否退出程序。
+   
+   【参数】
+   exit-on-error? - 是否在验证失败时退出程序（默认 true）
+   
+   【返回值】
+   验证通过返回 true，失败则打印错误信息并可能退出程序"
   [& {:keys [exit-on-error?] :or {exit-on-error? true}}]
   (if (validate-config config)
     true
@@ -309,23 +365,47 @@
                   ::sm/explain explain)))))
 
 (defn get-deletion-delay
+  "获取删除延迟时间。
+   
+   【返回值】
+   返回删除操作的延迟时间，默认为 7 天。
+   使用 ct/duration 类型表示。"
   []
   (or (c/get config :deletion-delay)
       (ct/duration {:days 7})))
 
 (defn get-file-clean-delay
+  "获取文件清理延迟时间。
+   
+   【返回值】
+   返回文件清理操作的延迟时间，默认为 2 天。
+   使用 ct/duration 类型表示。"
   []
   (or (c/get config :file-clean-delay)
       (ct/duration {:days 2})))
 
 (defn get
-  "A configuration getter. Helps code be more testable."
+  "配置获取器函数。
+   
+   【参数】
+   key - 配置项的键
+   default - 可选的默认值
+   
+   【返回值】
+   返回配置项的值，如果不存在且没有默认值则返回 nil
+   
+   【用途】
+   此函数有助于代码的可测试性，允许在测试时动态绑定不同的配置"
   ([key]
    (c/get config key))
   ([key default]
    (c/get config key default)))
 
 (defn logging-context
+  "获取日志上下文信息。
+   
+   【返回值】
+   返回包含版本信息的映射，用于日志记录时的上下文填充"
   []
   {:version/backend (:full version)})
 

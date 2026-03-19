@@ -1,8 +1,26 @@
-;; This Source Code Form is subject to the terms of the Mozilla Public
-;; License, v. 2.0. If a copy of the MPL was not distributed with this
-;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;; =============================================================================
+;; 形状导出处理器模块 (Export Shapes Handler Module)
+;; =============================================================================
 ;;
-;; Copyright (c) KALEIDOS INC
+;; 【模块概述】
+;; 本模块处理形状级别的导出请求，支持单对象和多对象导出。
+;; 单对象导出直接生成文件，多对象导出打包为 ZIP。
+;;
+;; 【核心概念】
+;; 1. 单对象导出 - 直接渲染单个对象并返回
+;; 2. 多对象导出 - 将多个对象打包为 ZIP 文件
+;; 3. 文件名去重 - 使用转换器处理文件名避免重复
+;; 4. 分组处理 - 按比例和类型分组以优化渲染
+;; 5. 进度报告 - 通过 Redis 发布导出进度
+;;
+;; 【依赖关系】
+;; - app.renderer - 渲染器
+;; - app.handlers.resources - 资源管理
+;; - app.redis - Redis 客户端
+;; - app.util.mime - MIME 类型工具
+;; - app.util.shell - Shell 工具
+;;
+;; =============================================================================
 
 (ns app.handlers.export-shapes
   (:require
@@ -50,6 +68,20 @@
           :opt-un [::wait ::name ::skip-children ::force-multiple]))
 
 (defn handler
+  "处理形状导出请求。
+   
+   【参数】
+   [{:keys [:request/auth-token] :as exchange} {:keys [exports force-multiple] :as params}] -
+     exchange: HTTP 交换对象
+     params: 请求参数
+   
+   【返回值】
+   添加了响应信息的 exchange 对象。
+   
+   【功能说明】
+   1. 准备导出参数
+   2. 判断是单对象还是多对象导出
+   3. 调用相应的处理器"
   [{:keys [:request/auth-token] :as exchange} {:keys [exports force-multiple] :as params}]
   (let [exports (prepare-exports exports auth-token)]
     (if (and (not force-multiple)
@@ -61,6 +93,15 @@
       (handle-multiple-export exchange (assoc params :exports exports)))))
 
 (defn- handle-single-export
+  "处理单对象导出。
+   
+   【参数】
+   [{:keys [:request/auth-token] :as exchange} {:keys [export name skip-children] :as params}] -
+     exchange: HTTP 交换对象
+     params: 请求参数
+   
+   【返回值】
+   添加了响应信息的 exchange 对象。"
   [{:keys [:request/auth-token] :as exchange} {:keys [export name skip-children] :as params}]
   (let [resource (rsc/create (:type export) (or name (:name export)))
         export   (assoc export :skip-children skip-children)]
@@ -80,6 +121,15 @@
                    (p/rejected cause))))))
 
 (defn- handle-multiple-export
+  "处理多对象导出。
+   
+   【参数】
+   [{:keys [:request/auth-token] :as exchange} {:keys [exports wait profile-id name] :as params}] -
+     exchange: HTTP 交换对象
+     params: 请求参数
+   
+   【返回值】
+   添加了响应信息的 exchange 对象。"
   [{:keys [:request/auth-token] :as exchange} {:keys [exports wait profile-id name] :as params}]
   (let [resource    (rsc/create :zip (or name (-> exports first :name)))
         total       (count exports)
@@ -108,7 +158,7 @@
                                     :on-progress on-progress)
 
         append      (fn [{:keys [filename path] :as resource}]
-                      (rsc/add-to-zip zip path (str/replace filename sanitize-file-regex "_")))
+                       (rsc/add-to-zip zip path (str/replace filename sanitize-file-regex "_")))
 
         proc        (->> exports
                          (map (fn [export] (rd/render export append)))
@@ -132,7 +182,17 @@
       (assoc exchange :response/body (dissoc resource :path)))))
 
 (defn- assoc-file-name
-  "A transducer that assocs a candidate filename and avoid duplicates"
+  "创建文件名分配的转换器。
+   
+   【参数】
+   无
+   
+   【返回值】
+   转换器函数，用于分配唯一的文件名。
+   
+   【功能说明】
+   一个 transducer，为每个导出项分配唯一的文件名，
+   如果文件名重复会自动添加数字后缀避免冲突。"
   []
   (letfn [(find-candidate [params used]
             (loop [index 0]
@@ -159,6 +219,21 @@
   default-partition-size 50)
 
 (defn prepare-exports
+  "准备导出参数列表。
+   
+   【参数】
+   exports - 原始导出参数列表
+   token - 认证令牌
+   
+   【返回值】
+   处理后的导出参数列表。
+   
+   【功能说明】
+   1. 添加认证令牌到每个导出项
+   2. 分配唯一文件名
+   3. 按比例和类型分组
+   4. 对大列表进行分批处理
+   5. 转换为渲染器需要的对象格式"
   [exports token]
   (letfn [(process-group [group]
             (sequence (comp (partition-all default-partition-size)

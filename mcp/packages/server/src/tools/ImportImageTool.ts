@@ -1,4 +1,28 @@
-import { z } from "zod";
+/**
+ * =============================================================================
+ * 导入图片工具模块 (Import Image Tool)
+ * =============================================================================
+ *
+ * 【模块概述】
+ * 本工具允许 AI 客户端从本地文件系统导入 raster 图片到 Penpot：
+ * - 支持 JPEG、PNG、GIF、WEBP 等常见图片格式
+ * - 自动根据文件扩展名确定 MIME 类型
+ * - 在 Penpot 中创建使用该图片作为填充的矩形
+ * - 可选指定位置和尺寸，支持按比例自动计算未指定的尺寸
+ *
+ * 【核心概念】
+ * 1. MIME 类型映射 - 文件扩展名到 MIME 类型的映射表
+ * 2. Base64 编码 - 图片数据通过 Base64 传递给插件
+ * 3. penpotUtils.importImage - 插件 API 方法用于创建图片矩形
+ *
+ * 【依赖关系】
+ * - Tool - 工具基类
+ * - ExecuteCodePluginTask - 代码执行任务
+ * - FileUtils - 文件工具类
+ * - fs - 文件系统模块
+ *
+ * =============================================================================
+ */
 import { Tool } from "../Tool";
 import { TextResponse, ToolResponse } from "../ToolResponse";
 import "reflect-metadata";

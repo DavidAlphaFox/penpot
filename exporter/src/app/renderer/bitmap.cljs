@@ -1,8 +1,23 @@
-;; This Source Code Form is subject to the terms of the Mozilla Public
-;; License, v. 2.0. If a copy of the MPL was not distributed with this
-;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;; =============================================================================
+;; 位图渲染模块 (Bitmap Renderer Module)
+;; =============================================================================
 ;;
-;; Copyright (c) KALEIDOS INC
+;; 【模块概述】
+;; 本模块负责将 Penpot 设计导出为位图格式（PNG、JPEG、WebP）。
+;; 使用浏览器截图功能生成高质量的位图图像。
+;;
+;; 【核心概念】
+;; 1. 多格式支持 - 支持 PNG、JPEG 和 WebP 三种位图格式
+;; 2. 透明背景 - PNG 支持透明背景，JPEG 使用白色背景
+;; 3. 格式转换 - WebP 需要先截图为 PNG 再转换
+;; 4. 质量控制 - JPEG 和 WebP 支持质量参数设置
+;;
+;; 【依赖关系】
+;; - app.browser - 浏览器操作 API
+;; - app.util.shell - Shell 命令执行
+;; - app.util.mime - MIME 类型工具
+;;
+;; =============================================================================
 
 (ns app.renderer.bitmap
   "A bitmap renderer."
@@ -17,6 +32,30 @@
    [promesa.core :as p]))
 
 (defn render
+  "渲染位图格式的导出。
+   
+   【参数】
+   {:keys [file-id page-id share-id token scale type objects skip-children] :as params} - 渲染参数：
+     - file-id: 文件 ID
+     - page-id: 页面 ID
+     - share-id: 分享 ID
+     - token: 认证令牌
+     - scale: 缩放比例
+     - type: 导出类型（:png :jpeg :webp）
+     - objects: 要导出的对象列表
+     - skip-children: 是否跳过子元素
+   on-object - 回调函数，接收渲染完成的对象
+   
+   【返回值】
+   Promise。
+   
+   【功能说明】
+   1. 准备浏览器选项和渲染 URI
+   2. 导航到渲染页面并将背景设为透明
+   3. 对每个对象进行截图：
+      - PNG/JPEG: 直接使用 Playwright 截图
+      - WebP: 先截图为 PNG，再使用 ImageMagick 转换
+   4. 调用回调处理结果"
   [{:keys [file-id page-id share-id token scale type objects skip-children] :as params} on-object]
   (letfn [(prepare-options [uri]
             #js {:screen #js {:width bw/default-viewport-width

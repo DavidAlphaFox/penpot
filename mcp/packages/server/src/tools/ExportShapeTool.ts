@@ -1,4 +1,29 @@
-import { z } from "zod";
+/**
+ * =============================================================================
+ * 导出图形工具模块 (Export Shape Tool)
+ * =============================================================================
+ *
+ * 【模块概述】
+ * 本工具允许 AI 客户端将 Penpot 中的图形导出为 PNG 或 SVG 格式：
+ * - 支持导出用户当前选中的图形（使用 'selection' 作为 shapeId）
+ * - 支持按 ID 导出指定图形
+ * - 支持两种导出模式：shape（完整形状）和 fill（图片填充的原始图片）
+ * - 可选保存到本地文件系统
+ *
+ * 【核心概念】
+ * 1. 导出格式 - 支持 PNG 和 SVG 两种格式
+ * 2. 导出模式 - shape 模式导出完整形状，fill 模式导出填充图片
+ * 3. Sharp 库 - 用于图片格式检测和 PNG 转换
+ * 4. 文件系统访问 - 仅在非远程模式下可用
+ *
+ * 【依赖关系】
+ * - Tool - 工具基类
+ * - ExecuteCodePluginTask - 代码执行任务（用于调用 penpotUtils.exportImage）
+ * - FileUtils - 文件工具类
+ * - sharp - 图片处理库
+ *
+ * =============================================================================
+ */
 import { Tool } from "../Tool";
 import { ImageContent, PNGImageContent, PNGResponse, TextContent, TextResponse, ToolResponse } from "../ToolResponse";
 import "reflect-metadata";

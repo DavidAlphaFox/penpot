@@ -1,4 +1,29 @@
-import { WebSocket, WebSocketServer } from "ws";
+/**
+ * =============================================================================
+ * 插件桥接器模块 (Plugin Bridge)
+ * =============================================================================
+ *
+ * 【模块概述】
+ * 本模块负责管理 MCP 服务器与 Penpot 插件之间的 WebSocket 通信：
+ * - 维护插件连接池
+ * - 处理请求/响应关联
+ * - 管理任务超时
+ * - 单用户/多用户模式支持
+ *
+ * 【核心概念】
+ * 1. WebSocket - 双向通信协议，用于服务器与插件实时交互
+ * 2. 任务队列 - 存储待处理的插件任务及其 Promise 解析器
+ * 3. 超时管理 - 防止任务无限等待
+ * 4. 客户端连接映射 - 按 WebSocket 和 userToken 索引连接
+ *
+ * 【依赖关系】
+ * - ws - Node.js WebSocket 实现
+ * - PluginTask - 插件任务基类
+ * - PluginTaskResponse - 插件任务响应类型
+ * - PenpotMcpServer - MCP 服务器引用
+ *
+ * =============================================================================
+ */
 import * as http from "http";
 import { PluginTask } from "./PluginTask";
 import { PluginTaskResponse, PluginTaskResult } from "@penpot/mcp-common";
@@ -7,8 +32,19 @@ import type { PenpotMcpServer } from "./PenpotMcpServer";
 
 const KEEP_ALIVE_TIME = 30000; // 30 seconds
 
+/**
+ * ClientConnection - 客户端连接接口
+ *
+ * 存储单个插件客户端的 WebSocket 连接和用户令牌信息。
+ */
 interface ClientConnection {
+    /**
+     * WebSocket 连接实例
+     */
     socket: WebSocket;
+    /**
+     * 用户认证令牌（多用户模式）
+     */
     userToken: string | null;
 }
 
@@ -24,6 +60,13 @@ export class PluginBridge {
     private readonly pendingTasks: Map<string, PluginTask<any, any>> = new Map();
     private readonly taskTimeouts: Map<string, NodeJS.Timeout> = new Map();
 
+    /**
+     * 创建插件桥接器实例
+     *
+     * @param mcpServer - MCP 服务器引用
+     * @param port - WebSocket 服务器监听端口
+     * @param taskTimeoutSecs - 任务超时时间（秒，默认 30）
+     */
     constructor(
         public readonly mcpServer: PenpotMcpServer,
         private port: number,
@@ -201,6 +244,20 @@ export class PluginBridge {
      *
      * @param task - The plugin task to execute
      * @throws Error if no plugin instances are connected or available
+     */
+    /**
+     * 执行插件任务
+     *
+     * 将任务发送到已连接的插件客户端执行，并返回执行结果：
+     * 1. 根据模式（单用户/多用户）获取合适的客户端连接
+     * 2. 将任务加入待处理队列
+     * 3. 通过 WebSocket 发送任务到插件
+     * 4. 设置超时处理
+     * 5. 返回 Promise，等待插件响应结果
+     *
+     * @param task - 要执行的插件任务
+     * @returns Promise<TResult> - 任务执行结果
+     * @throws Error 如果没有插件连接或连接不可用
      */
     public async executePluginTask<TResult extends PluginTaskResult<any>>(
         task: PluginTask<any, TResult>

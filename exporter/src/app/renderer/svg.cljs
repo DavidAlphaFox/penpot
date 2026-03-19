@@ -1,8 +1,24 @@
-;; This Source Code Form is subject to the terms of the Mozilla Public
-;; License, v. 2.0. If a copy of the MPL was not distributed with this
-;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;; =============================================================================
+;; SVG 渲染模块 (SVG Renderer Module)
+;; =============================================================================
 ;;
-;; Copyright (c) KALEIDOS INC
+;; 【模块概述】
+;; 本模块负责将 Penpot 设计导出为 SVG 矢量格式。
+;; 通过浏览器渲染设计页面，然后提取和优化 SVG 内容。
+;;
+;; 【核心概念】
+;; 1. 图像矢量化 - 使用 Potrace 将位图转换为 SVG 路径
+;; 2. 文本处理 - 提取和替换 foreignObject 元素中的文本
+;; 3. 颜色层分离 - 将不同颜色的元素分离为独立的 SVG 层
+;; 4. SVG 优化 - 使用 SVGO 对生成的 SVG 进行优化
+;;
+;; 【依赖关系】
+;; - svgo - SVG 优化工具
+;; - xml-js - XML 解析和序列化
+;; - app.browser - 浏览器操作 API
+;; - app.util.shell - Shell 命令执行
+;;
+;; =============================================================================
 
 (ns app.renderer.svg
   (:require
@@ -22,40 +38,96 @@
 (l/set-level! :trace)
 
 (defn- xml->clj
+  "将 XML 字符串转换为 Clojure 数据结构。
+   
+   【参数】
+   data - XML 字符串
+   
+   【返回值】
+   Clojure 映射数据结构。"
   [data]
   (js->clj (xml/xml2js data)))
 
 (defn- clj->xml
+  "将 Clojure 数据结构转换为 XML 字符串。
+   
+   【参数】
+   data - Clojure 映射数据结构
+   
+   【返回值】
+   XML 字符串。"
   [data]
   (xml/js2xml (clj->js data)))
 
 (defn ^boolean element?
+  "检查项是否为 XML 元素。
+   
+   【参数】
+   item - 要检查的数据
+   
+   【返回值】
+   如果是元素则返回 true。"
   [item]
   (and (map? item)
        (= "element" (get item "type"))))
 
 (defn ^boolean group-element?
+  "检查项是否为 SVG 组元素（g）。
+   
+   【参数】
+   item - 要检查的数据
+   
+   【返回值】
+   如果是组元素则返回 true。"
   [item]
   (and (element? item)
        (= "g" (get item "name"))))
 
 (defn ^boolean shape-element?
+  "检查项是否为 Shape 元素。
+   
+   【参数】
+   item - 要检查的数据
+   
+   【返回值】
+   如果是 Shape 元素则返回 true。"
   [item]
   (and (element? item)
        (str/starts-with? (get-in item ["attributes" "id"]) "shape-")))
 
 (defn ^boolean foreign-object-element?
+  "检查项是否为 foreignObject 元素。
+   
+   【参数】
+   item - 要检查的数据
+   
+   【返回值】
+   如果是 foreignObject 元素则返回 true。"
   [item]
   (and (element? item)
        (= "foreignObject" (get item "name"))))
 
 (defn ^boolean empty-defs-element?
+  "检查项是否为空的 defs 元素。
+   
+   【参数】
+   item - 要检查的数据
+   
+   【返回值】
+   如果是空的 defs 元素则返回 true。"
   [item]
   (and (= (get item "name") "defs")
        (nil? (get item "attributes"))
        (nil? (get item "elements"))))
 
 (defn ^boolean empty-path-element?
+  "检查项是否为空的 path 元素。
+   
+   【参数】
+   item - 要检查的数据
+   
+   【返回值】
+   如果是空的 path 元素则返回 true。"
   [item]
   (and (= (get item "name") "path")
        (let [d (get-in item ["attributes" "d"])]
@@ -64,7 +136,16 @@
              (str/empty? d)))))
 
 (defn flatten-toplevel-svg-elements
-  "Flattens XML data structure if two nested top-side SVG elements found."
+  "展平嵌套的顶层 SVG 元素。
+   
+   【参数】
+   item - XML 元素
+   
+   【返回值】
+   展平后的 XML 元素。
+   
+   【功能说明】
+   如果发现两个嵌套的顶层 SVG 元素，将其合并为一个。"
   [item]
   (if (and (= "svg" (get-in item ["elements" 0 "name"]))
            (= "svg" (get-in item ["elements" 0 "elements" 0 "name"])))
@@ -72,8 +153,18 @@
     item))
 
 (defn replace-text-nodes
-  "Function responsible of replace the foreignObject elements on the
-  provided XML with the previously rasterized PATH's."
+  "用预先生成的 PATH 替换 foreignObject 元素。
+   
+   【参数】
+   xmldata - 原始 XML 数据
+   nodes - 包含文本节点 SVG 数据的映射
+   
+   【返回值】
+   处理后的 XML 字符串。
+   
+   【功能说明】
+   遍历 XML 中的所有 foreignObject 元素，
+   用对应的矢量化文本 PATH 替换它们。"
   [xmldata nodes]
   (letfn [(replace-fobject [item]
             (if (foreign-object-element? item)
@@ -100,7 +191,13 @@
            (clj->xml)))))
 
 (defn parse-viewbox
-  "Parses viewBox string into width & height map."
+  "解析 viewBox 属性字符串。
+   
+   【参数】
+   data - viewBox 字符串（如 \"0 0 1920 1080\"）
+   
+   【返回值】
+   包含 width 和 height 的映射。"
   [data]
   (let [[width height] (->> (str/split data #"\s+")
                             (drop 2)
@@ -109,6 +206,30 @@
      :height height}))
 
 (defn render
+  "渲染 SVG 格式的导出。
+   
+   【参数】
+   {:keys [page-id file-id share-id objects token scale type]} - 渲染参数：
+     - page-id: 页面 ID
+     - file-id: 文件 ID
+     - share-id: 分享 ID
+     - objects: 要导出的对象列表
+     - token: 认证令牌
+     - scale: 缩放比例
+     - type: 导出类型（svg）
+   on-object - 回调函数，接收渲染完成的对象
+   
+   【返回值】
+   Promise。
+   
+   【功能说明】
+   1. 准备浏览器选项和渲染 URI
+   2. 导航到渲染页面
+   3. 提取每个对象的 SVG 数据
+   4. 处理文本节点（foreignObject -> SVG path）
+   5. 分离颜色层并生成最终 SVG
+   6. 使用 SVGO 优化（如果启用）
+   7. 调用回调处理结果"
   [{:keys [page-id file-id share-id objects token scale type]} on-object]
   (letfn [(convert-to-ppm [pngpath]
             (let [ppmpath (str/concat pngpath "origin.ppm")]

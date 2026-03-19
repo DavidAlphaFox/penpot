@@ -4,6 +4,32 @@
 ;;
 ;; Copyright (c) KALEIDOS INC
 
+;; =============================================================================
+;; 字体模块 (Fonts Module)
+;; =============================================================================
+;;
+;; 【模块概述】
+;; 本模块负责处理Penpot设计工具中的字体资源管理功能。
+;; 提供字体的上传、查询、更新、删除以及下载等RPC命令。
+;;
+;; 【核心概念】
+;; 1. 字体变体 (Font Variant) - 同一字体的不同样式组合（字重、字形）
+;; 2. 字体族 (Font Family) - 具有相同名称的一组字体变体
+;; 3. 字体格式 - 支持OTF、TTF、WOFF、WOFF2四种Web字体格式
+;; 4. 团队字体 - 存储在团队级别，供团队内所有项目使用
+;;
+;; 【依赖关系】
+;; - app.rpc.commands.teams - 团队权限验证
+;; - app.rpc.commands.files - 文件权限验证
+;; - app.storage - 字体文件存储
+;; - app.media - 字体处理和格式转换
+;; - app.features.logical-deletion - 软删除支持
+;;
+;; 【数据库表】
+;; - team-font-variant: 存储团队字体变体信息
+;;
+;; =============================================================================
+
 (ns app.rpc.commands.fonts
   (:require
    [app.binfile.common :as bfc]
@@ -46,7 +72,25 @@
 (def valid-weight #{100 200 300 400 500 600 700 800 900 950})
 (def valid-style #{"normal" "italic"})
 
-;; --- QUERY: Get font variants
+;; --- QUERY: 获取字体变体 (Get Font Variants)
+;;
+;; 【功能说明】
+;; 根据团队ID、文件ID或项目ID查询可用的字体变体列表。
+;; 返回指定范围内的所有未删除字体变体。
+;;
+;; 【参数】
+;; team-id - 团队ID（可选，与file-id/project-id互斥）
+;; file-id - 文件ID（可选）
+;; project-id - 项目ID（可选）
+;;
+;; 【返回值】
+;; 返回字体变体列表，每个变体包含字体族、字重、字形等信息
+;;
+;; 【权限检查】
+;; - 团队ID: 需要团队读取权限
+;; - 项目ID: 需要项目读取权限
+;; - 文件ID: 需要文件读取权限
+;;
 
 (def ^:private
   schema:get-font-variants
@@ -90,6 +134,34 @@
 
 (declare create-font-variant)
 
+;; --- 创建字体变体 (Create Font Variant)
+;;
+;; 【功能说明】
+;; 上传并创建新的字体变体。支持多种字体格式（OTF、TTF、WOFF、WOFF2），
+;; 系统会自动生成缺失的字体格式，并处理分块上传的数据合并。
+;;
+;; 【参数】
+;; team-id - 团队ID
+;; font-id - 字体族ID
+;; font-family - 字体族名称
+;; font-weight - 字重值（100-950）
+;; font-style - 字形（normal/italic）
+;; data - 字体文件数据映射，键为MIME类型，值为文件内容或字节数组
+;;
+;; 【返回值】
+;; 返回创建的字体变体记录，包含各格式文件的存储对象ID
+;;
+;; 【处理流程】
+;; 1. 合并分块上传的字体数据
+;; 2. 生成缺失的字体格式
+;; 3. 将字体文件持久化到存储
+;; 4. 创建数据库记录
+;;
+;; 【注意事项】
+;; - FIXME: 需要重构，不应在字体创建过程中持有整个数据库连接
+;; - 触发Webhooks事件
+;; - 受速率限制：每用户/全局处理限制
+;;
 (def ^:private schema:create-font-variant
   [:map {:title "create-font-variant"}
    [:team-id ::sm/uuid]
@@ -103,6 +175,19 @@
 ;; FIXME: IMPORTANT: refactor this, we should not hold a whole db
 ;; connection around the font creation
 
+;; --- 内部函数: 创建字体变体 (Create Font Variant - Internal)
+;;
+;; 【功能说明】
+;; 创建字体变体的内部实现函数。负责处理字体数据的合并、格式生成、
+;; 文件存储以及数据库记录创建。
+;;
+;; 【参数】
+;; cfg - 包含存储和数据库连接的配置
+;; params - 包含字体变体参数的映射
+;;
+;; 【返回值】
+;; 创建的字体变体记录
+;;
 (sv/defmethod ::create-font-variant
   {::doc/added "1.18"
    ::climit/id [[:process-font/by-profile ::rpc/profile-id]
@@ -195,8 +280,24 @@
           result (insert-font-variant! assets)]
       (vary-meta result assoc ::audit/replace-props (update params :data (comp vec keys))))))
 
-;; --- UPDATE FONT FAMILY
+;; --- UPDATE FONT FAMILY (更新字体族)
 
+;; --- 更新字体族名称 (Update Font Family)
+;;
+;; 【功能说明】
+;; 更新指定字体族的名称。影响该字体族下的所有变体。
+;;
+;; 【参数】
+;; team-id - 团队ID
+;; id - 字体族ID
+;; name - 新的字体族名称
+;;
+;; 【返回值】
+;; 返回nil，变更通过Webhooks传播
+;;
+;; 【权限检查】
+;; 需要团队编辑权限
+;;
 (def ^:private
   schema:update-font
   [:map {:title "update-font"}
@@ -224,8 +325,28 @@
                                           :team-id team-id
                                           :profile-id profile-id}}))))
 
-;; --- DELETE FONT
+;; --- DELETE FONT (删除字体)
 
+;; --- 删除字体 (Delete Font)
+;;
+;; 【功能说明】
+;; 软删除指定的字体族及其所有变体。使用逻辑删除，
+;; 数据在延迟期后会被永久清除。
+;;
+;; 【参数】
+;; team-id - 团队ID
+;; id - 字体族ID
+;;
+;; 【返回值】
+;; 返回删除操作的审计属性
+;;
+;; 【删除延迟】
+;; - 使用团队配置的删除延迟期
+;; - 支持撤销（在延迟期内）
+;;
+;; 【权限检查】
+;; 需要团队编辑权限
+;;
 (def ^:private
   schema:delete-font
   [:map {:title "delete-font"}
@@ -270,8 +391,23 @@
                       :name (:font-family (peek fonts))
                       :profile-id profile-id}})))
 
-;; --- DELETE FONT VARIANT
+;; --- DELETE FONT VARIANT (删除字体变体)
 
+;; --- 删除字体变体 (Delete Font Variant)
+;;
+;; 【功能说明】
+;; 软删除单个字体变体。使用逻辑删除机制。
+;;
+;; 【参数】
+;; team-id - 团队ID
+;; id - 字体变体ID
+;;
+;; 【返回值】
+;; 返回删除操作的审计属性（字体族名称和字体ID）
+;;
+;; 【权限检查】
+;; 需要团队编辑权限
+;;
 (def ^:private schema:delete-font-variant
   [:map {:title "delete-font-variant"}
    [:team-id ::sm/uuid]
@@ -301,8 +437,22 @@
       {::audit/props {:font-family (:font-family variant)
                       :font-id (:font-id variant)}})))
 
-;; --- DOWNLOAD FONT
+;; --- DOWNLOAD FONT (下载字体)
 
+;; --- 内部函数: 创建临时存储对象 (Make Temporal Storage Object)
+;;
+;; 【功能说明】
+;; 将内容转换为临时存储对象。用于下载字体时创建临时文件。
+;; 生成带哈希的内容，设置30分钟过期时间。
+;;
+;; 【参数】
+;; cfg - 存储配置
+;; profile-id - 用户ID
+;; content - 包含mtype和path的内容映射
+;;
+;; 【返回值】
+;; 存储对象
+;;
 (defn- make-temporal-storage-object
   [cfg profile-id content]
   (let [storage (sto/resolve cfg)
@@ -321,11 +471,34 @@
     (sto/put-object! storage content)))
 
 (defn- make-variant-filename
+  "生成字体变体文件名。
+   
+   【参数】
+   v - 字体变体数据
+   mtype - 内容类型（MIME类型）
+   
+   【返回值】
+   格式为: font-family-weight-style.extension 的文件名"
   [v mtype]
   (str (:font-family v) "-" (:font-weight v)
        (when-not (= "normal" (:font-style v)) (str "-" (:font-style v)))
        (cmedia/mtype->extension mtype)))
 
+;; --- 下载字体 (Download Font)
+;;
+;; 【功能说明】
+;; 下载单个字体文件。自动选择最佳可用格式（优先TTF以获得更广泛的兼容性）。
+;; 返回HTTP重定向到资源URI。
+;;
+;; 【参数】
+;; id - 字体变体ID
+;;
+;; 【返回值】
+;; 包含id、uri和name的映射
+;;
+;; 【格式优先级】
+;; TTF > OTF > WOFF2 > WOFF1
+;;
 (def ^:private schema:download-font
   [:map {:title "download-font"}
    [:id ::sm/uuid]])
@@ -350,6 +523,25 @@
        :uri (files/resolve-public-uri (:id sobj))
        :name (make-variant-filename variant mtype)})))
 
+;; --- 下载字体族 (Download Font Family)
+;;
+;; 【功能说明】
+;; 下载整个字体族作为ZIP文件。包含该族的所有字体变体。
+;; 返回ZIP文件的字节流，不进行编码或JSON转换。
+;;
+;; 【参数】
+;; font-id - 字体族ID
+;;
+;; 【返回值】
+;; 包含id、uri和name的映射，name为 font-family.zip
+;;
+;; 【处理流程】
+;; 1. 查询字体族的所有变体
+;; 2. 为每个变体选择最佳格式
+;; 3. 将所有字体打包成ZIP
+;; 4. 创建临时存储对象
+;; 5. 返回下载链接
+;;
 (def ^:private schema:download-font-family
   [:map {:title "download-font-family"}
    [:font-id ::sm/uuid]])

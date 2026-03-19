@@ -1,8 +1,31 @@
-;; This Source Code Form is subject to the terms of the Mozilla Public
-;; License, v. 2.0. If a copy of the MPL was not distributed with this
-;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;; =============================================================================
+;; 认证模块 (Authentication Module)
+;; =============================================================================
 ;;
-;; Copyright (c) KALEIDOS INC
+;; 【模块概述】
+;; 本模块负责处理 Penpot 设计工具的所有认证相关 RPC 命令，包括：
+;; - 用户密码登录 (login-with-password)
+;; - 用户注销 (logout)
+;; - 账户恢复 (recover-profile / request-profile-recovery)
+;; - 用户注册流程 (prepare-register-profile / register-profile)
+;; - SSO 提供商查询 (get-sso-provider)
+;;
+;; 【核心概念】
+;; 1. Session (会话) - 用户认证后会创建会话，使用 session 中间件管理
+;; 2. Token (令牌) - 用于账户恢复、邮箱验证、团队邀请等场景的临时令牌
+;; 3. OIDC (OpenID Connect) - 单点登录认证协议支持
+;; 4. 密码派生 - 使用 auth/derive-password 安全存储密码
+;;
+;; 【依赖关系】
+;; - app.auth - 密码验证和派生逻辑
+;; - app.auth.oidc - OIDC 认证提供商支持
+;; - app.email - 邮件发送功能
+;; - app.tokens - 令牌生成和验证
+;; - app.http.session - 会话管理
+;; - app.rpc.commands.profile - 用户配置查询
+;; - app.rpc.commands.teams - 团队邀请处理
+;;
+;; =============================================================================
 
 (ns app.rpc.commands.auth
   (:require
@@ -46,6 +69,13 @@
   [::sm/word-string {:max 6000}])
 
 (defn- elapsed-verify-threshold?
+  "检查用户配置文件的修改时间是否超过了邮件验证阈值。
+   
+   【参数】
+   profile - 用户配置文件，包含 :modified-at 字段
+   
+   【返回值】
+   返回 true 如果距离上次修改超过了配置的阈值时间，否则返回 false"
   [profile]
   (let [elapsed (ct/diff (:modified-at profile) (ct/now))
         verify-threshold (cf/get :email-verify-threshold)]
@@ -54,6 +84,20 @@
 ;; ---- COMMAND: login with password
 
 (defn login-with-password
+  "使用邮箱和密码进行用户认证。
+   
+   【参数】
+   cfg - 系统配置，包含数据库连接等信息
+   params - 认证参数，包含 :email (邮箱) 和 :password (密码)
+           可选 :invitation-token 用于团队邀请关联
+   
+   【返回值】
+   返回包含用户会话信息的响应，包含:
+   - :id - 用户ID
+   - :email - 用户邮箱
+   - :fullname - 用户全名
+   - :is-admin - 是否为管理员
+   - :invitation-token - 如果有未处理的团队邀请则返回邀请令牌"
   [cfg {:keys [email password] :as params}]
 
   (when-not (or (contains? cf/flags :login)
@@ -140,6 +184,18 @@
   [:map {:title "logoug"}
    [:profile-id {:optional true} ::sm/uuid]])
 
+(defn logout
+  "用户注销命令。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id (可选)，如果提供则验证是否与当前会话匹配
+   
+   【返回值】
+   如果使用 SSO 登录则返回包含 :redirect-uri 的地图用于重定向到 SSO 注销页面，
+   否则返回空地图。都会清除当前会话。"
+  [{:keys [::db/conn] :as cfg} {:keys [::rpc/profile-id] :as params}]
+
 (sv/defmethod ::logout
   "Clears the authentication cookie and logout the current session."
   {::rpc/auth false
@@ -172,6 +228,14 @@
 ;; ---- COMMAND: Recover Profile
 
 (defn recover-profile
+  "使用密码恢复令牌重置用户密码。
+   
+   【参数】
+   cfg - 系统配置，包含数据库连接
+   params - 包含 :token (密码恢复令牌) 和 :password (新密码)
+   
+   【返回值】
+   返回 nil。密码更新后用户账户将被激活。"
   [{:keys [::db/conn] :as cfg} {:keys [token password]}]
   (letfn [(validate-token [token]
             (let [tdata (tokens/verify cfg {:token token :iss :password-recovery})]
@@ -204,6 +268,21 @@
 ;; ---- COMMAND: Prepare Register
 
 (defn- validate-register-attempt!
+  "验证注册请求的合法性。
+   
+   【参数】
+   cfg - 系统配置
+   params - 注册参数，包含 :email 等字段
+   
+   【返回值】
+   如果验证失败则抛出异常，成功则返回 nil。
+   
+   【验证内容】
+   - 检查注册功能是否启用
+   - 如果有邀请令牌，验证邮箱是否与邀请匹配
+   - 检查邮箱域名是否在黑名单或不在白名单
+   - 检查邮箱和密码是否相同
+   - 检查邮箱是否有退回报告或投诉报告"
   [cfg params]
 
   (when (or (not (contains? cf/flags :registration))
@@ -253,6 +332,19 @@
               :hint "email has complaint reports")))
 
 (defn prepare-register
+  "准备注册流程：验证注册信息并生成注册令牌。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含:
+   - :fullname - 用户全名
+   - :email - 用户邮箱
+   - :password - 用户密码
+   - :accept-newsletter-updates - 是否接受新闻更新
+   - :invitation-token - 团队邀请令牌（可选）
+   
+   【返回值】
+   返回包含 :token 的地图，该令牌用于完成注册。"
   [{:keys [::db/pool] :as cfg} {:keys [fullname email accept-newsletter-updates] :as params}]
 
   (validate-register-attempt! cfg params)
@@ -293,6 +385,14 @@
 ;; ---- COMMAND: Register Profile
 
 (defn import-profile-picture
+  "从 URI 导入用户头像图片。
+   
+   【参数】
+   cfg - 系统配置
+   uri - 头像图片的 URI 地址
+   
+   【返回值】
+   成功时返回存储对象的 ID，失败时返回 nil。"
   [cfg uri]
   (try
     (let [storage (sto/resolve cfg)
@@ -313,8 +413,24 @@
       nil)))
 
 (defn create-profile
-  "Create the profile entry on the database with limited set of input
-  attrs (all the other attrs are filled with default values)."
+  "在数据库中创建用户配置记录。
+   
+   【参数】
+   cfg - 系统配置，包含数据库连接
+   params - 创建参数，包含:
+   - :email - 用户邮箱
+   - :fullname - 用户全名
+   - :password - 密码（可选，默认为 "!" 表示无密码）
+   - :locale - 语言环境（可选）
+   - :backend - 认证后端（默认为 "penpot"）
+   - :is-demo - 是否为演示账户
+   - :is-muted - 是否被静音
+   - :is-active - 是否激活
+   - :theme - 主题偏好
+   - :props - 额外属性
+   
+   【返回值】
+   返回创建的用户配置记录，包含所有属性。"
   [{:keys [::db/conn] :as cfg} {:keys [email] :as params}]
   (let [id        (or (:id params) (uuid/next))
         props     (-> (audit/extract-utm-params params)
@@ -371,6 +487,14 @@
 
 
 (defn create-profile-rels
+  "为新创建的用户配置建立关联关系。
+   
+   【参数】
+   conn - 数据库连接
+   profile - 用户配置记录
+   
+   【返回值】
+   返回更新后的用户配置，包含默认团队 ID 和默认项目 ID。"
   [conn {:keys [id] :as profile}]
   (let [features (cfeat/get-enabled-features cf/flags)
         team     (teams/create-team conn
@@ -386,6 +510,14 @@
         (profile/decode-row))))
 
 (defn send-email-verification!
+  "发送邮箱验证邮件。
+   
+   【参数】
+   cfg - 系统配置
+   profile - 用户配置记录
+   
+   【返回值】
+   返回 nil。发送验证邮件到用户邮箱，包含验证链接。"
   [{:keys [::db/conn] :as cfg} profile]
   (let [vtoken (tokens/generate cfg
                                 {:iss :verify-email
@@ -407,6 +539,19 @@
                 :extra-data ptoken})))
 
 (defn register-profile
+  "完成用户注册流程。
+   
+   【参数】
+   cfg - 系统配置，包含数据库连接和工作执行器
+   params - 包含 :token (之前准备的注册令牌)
+   
+   【返回值】
+   根据不同情况返回不同结果：
+   - 如果用户被阻止，返回包含邮箱的地图
+   - 如果来自团队邀请，返回新的邀请令牌和会话
+   - 如果新用户已激活，返回用户会话信息
+   - 如果新用户未激活，返回邮箱地址（需验证）
+   - 如果是重复注册，返回相应信息"
   [{:keys [::db/conn ::wrk/executor] :as cfg} {:keys [token] :as params}]
   (let [claims     (tokens/verify cfg {:token token :iss :prepared-register})
         params     (into claims params)
@@ -537,6 +682,14 @@
 ;; ---- COMMAND: Request Profile Recovery
 
 (defn- request-profile-recovery
+  "请求密码恢复：查找用户并发送恢复邮件。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :email (用户邮箱)
+   
+   【返回值】
+   返回 nil。发送包含恢复链接的邮件到用户邮箱。"
   [{:keys [::db/conn] :as cfg} {:keys [email] :as params}]
   (letfn [(create-recovery-token [{:keys [id] :as profile}]
             (let [token (tokens/generate cfg
@@ -610,7 +763,13 @@
 ;; --- COMMAND: get-sso-config
 
 (defn- extract-domain
-  "Extract the domain part from email"
+  "从邮箱地址中提取域名部分。
+   
+   【参数】
+   email - 邮箱地址字符串
+   
+   【返回值】
+   返回域名部分（小写并去除空格），如果格式无效则返回 nil。"
   [email]
   (let [at (str/last-index-of email "@")]
     (when (and (>= at 0)

@@ -1,8 +1,24 @@
-;; This Source Code Form is subject to the terms of the Mozilla Public
-;; License, v. 2.0. If a copy of the MPL was not distributed with this
-;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;; =============================================================================
+;; 帧导出处理器模块 (Export Frames Handler Module)
+;; =============================================================================
 ;;
-;; Copyright (c) KALEIDOS INC
+;; 【模块概述】
+;; 本模块处理帧级别的导出请求，将多个设计帧导出为合并的 PDF 文档。
+;; 支持进度报告和错误处理。
+;;
+;; 【核心概念】
+;; 1. PDF 合并 - 使用 pdfunite 将多个 PDF 合并为一个
+;; 2. 进度报告 - 通过 Redis 发布导出进度更新
+;; 3. 资源管理 - 创建临时 PDF 资源文件
+;; 4. 上传处理 - 导出完成后上传到服务器
+;;
+;; 【依赖关系】
+;; - app.renderer - 渲染器
+;; - app.handlers.resources - 资源管理
+;; - app.redis - Redis 客户端
+;; - app.handlers.export-shapes - 导出准备工具
+;;
+;; =============================================================================
 
 (ns app.handlers.export-frames
   (:require
@@ -38,6 +54,19 @@
           :opt-un [::name]))
 
 (defn handler
+  "处理帧导出请求。
+   
+   【参数】
+   [{:keys [:request/auth-token] :as exchange} {:keys [exports] :as params}] - 
+     exchange: HTTP 交换对象
+     params: 请求参数，包含 exports 列表
+   
+   【返回值】
+   添加了响应信息的 exchange 对象。
+   
+   【功能说明】
+   1. 准备导出参数列表（添加 type、scale、suffix）
+   2. 调用 handle-export 进行实际导出处理"
   [{:keys [:request/auth-token] :as exchange} {:keys [exports] :as params}]
   ;; NOTE: we need to have the `:type` prop because the exports
   ;; datastructure preparation uses it for creating the groups.
@@ -47,6 +76,24 @@
     (handle-export exchange (assoc params :exports exports))))
 
 (defn handle-export
+  "执行帧导出。
+   
+   【参数】
+   [{:keys [:request/auth-token] :as exchange} {:keys [exports name profile-id] :as params}] -
+     exchange: HTTP 交换对象
+     params: 请求参数
+   
+   【返回值】
+   添加了响应信息的 exchange 对象。
+   
+   【功能说明】
+   1. 创建 PDF 资源
+   2. 设置进度回调（通过 Redis 发布）
+   3. 设置完成回调和错误回调
+   4. 并行渲染所有帧
+   5. 合并 PDF 文件
+   6. 移动文件到目标位置
+   7. 上传资源"
   [{:keys [:request/auth-token] :as exchange} {:keys [exports name profile-id] :as params}]
   (let [topic       (str profile-id)
         file-id     (-> exports first :file-id)
@@ -113,6 +160,14 @@
     (assoc exchange :response/body (dissoc resource :path))))
 
 (defn- join-pdf
+  "合并多个 PDF 文件。
+   
+   【参数】
+   file-id - 文件 ID（用于生成临时文件前缀）
+   paths - PDF 文件路径列表
+   
+   【返回值】
+   Promise，解析为合并后的 PDF 文件路径。"
   [file-id paths]
   (p/let [prefix (str/concat "penpot.pdfunite." file-id ".")
           path   (sh/tempfile :prefix prefix :suffix ".pdf")]
@@ -120,6 +175,14 @@
     path))
 
 (defn- move-file
+  "移动文件到目标位置。
+   
+   【参数】
+   {:keys [path] :as resource} - 资源对象
+   output-path - 目标路径
+   
+   【返回值】
+   资源对象。"
   [{:keys [path] :as resource} output-path]
   (p/do
     (sh/move! output-path path)

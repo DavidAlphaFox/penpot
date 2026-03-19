@@ -1,3 +1,26 @@
+;; =============================================================================
+;; 数据库层 (Database Layer)
+;; =============================================================================
+;;
+;; 【模块概述】
+;; 本模块是 Penpot 后端的数据库抽象层，基于 next.jdbc 封装 PostgreSQL 操作。
+;; 提供连接池管理、事务处理、SQL 构建器封装以及对 PostgreSQL 特有类型（如数组、JSON、inet 等）的支持。
+;;
+;; 【核心概念】
+;; 1. HikariCP 连接池 - 高性能的 JDBC 连接池管理
+;; 2. SQL 构建器 - 简化常见 CRUD 操作的 SQL 语句构建
+;; 3. 命名转换 - kebab-case 和 snake_case 之间的自动转换
+;; 4. 事务管理 - 支持嵌套事务和保存点
+;; 5. PostgreSQL 类型 - 处理 pgarray、pgobject、inet 等特殊类型
+;;
+;; 【依赖关系】
+;; - next.jdbc - JDBC 操作封装
+;; - com.zaxxer.hikari - 连接池实现
+;; - app.db.sql - SQL 构建器
+;; - app.metrics - 指标收集
+;;
+;; =============================================================================
+
 ;; This Source Code Form is subject to the terms of the Mozilla Public
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -51,9 +74,21 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Initialization
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ============================================================================
 
 (def ^:private schema:pool-options
+  "连接池选项的 Malli schema 定义。
+   
+   【参数说明】
+   - connect-timeout: 连接超时时间（毫秒）
+   - max-size: 最大连接数
+   - min-size: 最小连接数
+   - name: 连接池名称
+   - uri: 数据库 URI
+   - password: 数据库密码
+   - username: 数据库用户名
+   - validation-timeout: 验证超时时间
+   - read-only: 是否只读模式"
   [:map {:title "pool-options"}
    [::connect-timeout {:optional true} ::sm/int]
    [::max-size {:optional true} ::sm/int]
@@ -66,6 +101,17 @@
    [::read-only {:optional true} ::sm/boolean]])
 
 (def defaults
+  "连接池默认配置值。
+   
+   【默认值】
+   - name: :main
+   - min-size: 0
+   - max-size: 60
+   - connection-timeout: 10000ms
+   - validation-timeout: 10000ms
+   - idle-timeout: 120000ms (2分钟)
+   - max-lifetime: 1800000ms (30分钟)
+   - read-only: false"
   {::name :main
    ::min-size 0
    ::max-size 60
@@ -278,27 +324,56 @@
   sql/default-opts)
 
 (defn exec!
+  "执行原始 SQL 语句。
+   
+   【参数】
+   ds - 数据库连接或连接池
+   sv - SQL 向量或字符串
+   opts - 可选的执行选项
+   
+   【返回值】
+   执行结果（通常是结果集）"
   ([ds sv] (exec! ds sv nil))
   ([ds sv opts]
    (let [conn (get-connectable ds)
          opts (if (empty? opts)
                 default-opts
                 (into default-opts (rename-opts opts)))]
-     (jdbc/execute! conn sv opts))))
+      (jdbc/execute! conn sv opts))))
 
 (defn exec-one!
+  "执行原始 SQL 语句并返回单行结果。
+   
+   【参数】
+   ds - 数据库连接或连接池
+   sv - SQL 向量或字符串
+   opts - 可选的执行选项
+   
+   【返回值】
+   单行结果，如果没有结果则返回 nil"
   ([ds sv] (exec-one! ds sv nil))
   ([ds sv opts]
    (let [conn (get-connectable ds)
          opts (if (empty? opts)
                 default-opts
                 (into default-opts (rename-opts opts)))]
-     (jdbc/execute-one! conn sv opts))))
+      (jdbc/execute-one! conn sv opts))))
 
 (defn insert!
-  "A helper that builds an insert sql statement and executes it. By
-  default returns the inserted row with all the field; you can delimit
-  the returned columns with the `::sql/columns` option."
+  "插入数据到数据库表。
+   
+   【功能】
+   构建 INSERT SQL 语句并执行，默认返回插入行的所有字段。
+   可以使用 `::sql/columns` 选项指定返回的列。
+   
+   【参数】
+   ds - 数据库连接或连接池
+   table - 表名
+   params - 要插入的字段映射
+   opts - 可选选项
+   
+   【返回值】
+   插入的行数据（包含所有或指定的列）"
   [ds table params & {:as opts}]
   (let [conn (get-connectable ds)
         sql  (sql/insert table params opts)
@@ -308,12 +383,21 @@
     (jdbc/execute-one! conn sql opts)))
 
 (defn insert-many!
-  "An optimized version of `insert!` that perform insertion of multiple
-  values at once.
-
-  This expands to a single SQL statement with placeholders for every
-  value being inserted. For large data sets, this may exceed the limit
-  of sql string size and/or number of parameters."
+  "批量插入多条记录。
+   
+   【功能】
+   优化的批量插入实现，将多条记录合并为单个 SQL 语句。
+   对于大数据集，可能超出 SQL 字符串大小或参数数量的限制。
+   
+   【参数】
+   ds - 数据库连接或连接池
+   table - 表名
+   cols - 列名向量
+   rows - 要插入的行向量（每行是一个映射）
+   opts - 可选选项
+   
+   【返回值】
+   插入结果"
   [ds table cols rows & {:as opts}]
   (let [conn (get-connectable ds)
         sql  (sql/insert-many table cols rows opts)
@@ -324,20 +408,20 @@
     (jdbc/execute! conn sql opts)))
 
 (defn update!
-  "A helper that build an UPDATE SQL statement and executes it.
-
-  Given a connectable object, a table name, a hash map of columns and
-  values to set, and either a hash map of columns and values to search
-  on or a vector of a SQL where clause and parameters, perform an
-  update on the table.
-
-  By default returns an object with the number of affected rows; a
-  complete row can be returned if you pass `::return-keys` with `true`
-  or with a vector of columns.
-
-  Also it can be combined with the `::many` option if you perform an
-  update to multiple rows and you want all the affected rows to be
-  returned."
+  "更新数据库表中的记录。
+   
+   【功能】
+   构建 UPDATE SQL 语句并执行。
+   
+   【参数】
+   ds - 数据库连接或连接池
+   table - 表名
+   params - 要更新的字段映射
+   where - WHERE 条件（字段映射或 [sql-string & params] 向量）
+   opts - 可选选项（如 ::return-keys, ::many）
+   
+   【返回值】
+   默认返回受影响的行数；设置 ::return-keys 可返回完整行数据"
   [ds table params where & {:as opts}]
   (let [conn (get-connectable ds)
         sql  (sql/update table params where opts)
@@ -350,19 +434,19 @@
       (jdbc/execute-one! conn sql opts))))
 
 (defn delete!
-  "A helper that builds an DELETE SQL statement and executes it.
-
-  Given a connectable object, a table name, and either a hash map of columns
-  and values to search on or a vector of a SQL where clause and parameters,
-  perform a delete on the table.
-
-  By default returns an object with the number of affected rows; a
-  complete row can be returned if you pass `::return-keys` with `true`
-  or with a vector of columns.
-
-  Also it can be combined with the `::many` option if you perform an
-  update to multiple rows and you want all the affected rows to be
-  returned."
+  "从数据库表中删除记录。
+   
+   【功能】
+   构建 DELETE SQL 语句并执行。
+   
+   【参数】
+   ds - 数据库连接或连接池
+   table - 表名
+   params - WHERE 条件字段映射
+   opts - 可选选项（如 ::return-keys, ::many）
+   
+   【返回值】
+   默认返回受影响的行数；设置 ::return-keys 可返回完整行数据"
   [ds table params & {:as opts}]
   (let [conn (get-connectable ds)
         sql  (sql/delete table params opts)
@@ -374,21 +458,100 @@
       (jdbc/execute-one! conn sql opts))))
 
 (defn query
+  "查询数据库表并返回多行结果。
+   
+   【参数】
+   ds - 数据库连接或连接池
+   table - 表名
+   params - 查询参数（字段映射）
+   opts - 可选选项
+   
+   【返回值】
+   查询结果向量"
   [ds table params & {:as opts}]
   (exec! ds (sql/select table params opts) opts))
 
 (defn is-row-deleted?
+  "检查行是否被标记为已删除。
+   
+   【参数】
+   row - 数据库行映射
+   
+   【返回值】
+   如果 deleted-at 字段存在且非 nil 返回 true"
   [{:keys [deleted-at]}]
   (some? deleted-at))
 
 (defn get*
-  "Retrieve a single row from database that matches a simple filters. Do
-  not raises exceptions."
+  "查询单行数据（不抛出异常）。
+   
+   【功能】
+   根据简单条件查询单行数据，如果找到多条也只返回第一条。
+   默认过滤已删除的行（deleted-at 非 nil）。
+   
+   【参数】
+   ds - 数据库连接或连接池
+   table - 表名
+   params - 查询条件（字段映射）
+   opts - 可选选项（如 ::remove-deleted 禁用删除过滤）
+   
+   【返回值】
+   找到的第一行数据，未找到返回 nil"
   [ds table params & {:as opts}]
   (let [rows (exec! ds (sql/select table params opts))
         rows (cond->> rows
                (::remove-deleted opts true)
                (remove is-row-deleted?))]
+    (first rows)))
+
+(defn get
+  "查询单行数据（未找到时抛出异常）。
+   
+   【功能】
+   根据条件查询单行数据，如果未找到则抛出 :not-found 异常。
+   
+   【参数】
+   ds - 数据库连接或连接池
+   table - 表名
+   params - 查询条件（字段映射）
+   opts - 可选选项（如 ::check-deleted 禁用删除检查）
+   
+   【返回值】
+   找到的行数据，未找到则抛出异常"
+  [ds table params & {:as opts}]
+  (let [row (get* ds table params opts)]
+    (when (and (not row) (::check-deleted opts true))
+      (ex/raise :type :not-found
+                :code :object-not-found
+                :table table
+                :params params
+                :hint "database object not found"))
+    row))
+
+(defn get-with-sql
+  "使用自定义 SQL 查询单行数据。
+   
+   【参数】
+   ds - 数据库连接或连接池
+   sql - SQL 向量
+   opts - 可选选项
+   
+   【返回值】
+   找到的第一行数据，未找到且启用检查时抛出异常"
+  [ds sql & {:as opts}]
+  (let [rows
+        (cond->> (exec! ds sql opts)
+          (::remove-deleted opts true)
+          (remove is-row-deleted?)
+
+          :always
+          (not-empty))
+
+    (when (and (not rows) (::throw-if-not-exists opts true))
+      (ex/raise :type :not-found
+                :code :object-not-found
+                :hint "database object not found"))
+
     (first rows)))
 
 (defn get
@@ -546,14 +709,39 @@
      (.rollback conn sp))))
 
 (defn transact!
-  "A lower-level function for executing function in a transaction"
+  "执行事务的低级函数。
+   
+   【功能】
+   在事务中执行提供的函数。
+   
+   【参数】
+   transactable - 数据库连接或连接池
+   f - 要在事务中执行的函数
+   opts - 事务选项
+   
+   【返回值】
+   函数的返回值"
   ([transactable f] (transact! transactable f {}))
   ([transactable f opts]
    (binding [next.jdbc.transaction/*nested-tx* :ignore]
      (jdbc/transact transactable f opts))))
 
 (defn tx-run!
-  "Run a function in a transaction."
+  "在事务中运行函数。
+   
+   【功能】
+   1. 解析系统配置获取连接
+   2. 开始数据库事务
+   3. 执行提供的函数
+   4. 根据函数结果自动提交或回滚
+   
+   【参数】
+   system - 系统配置映射（包含 ::conn 或 ::pool）
+   f - 要执行的函数
+   params - 传递给函数的额外参数
+   
+   【返回值】
+   函数的返回值"
   [system f & params]
   (if (connection? system)
     (tx-run! {::conn system} f)
@@ -572,6 +760,20 @@
         (throw (IllegalArgumentException. "invalid system/cfg provided"))))))
 
 (defn run!
+  "使用连接或连接池运行函数。
+   
+   【功能】
+   1. 如果是连接，直接执行函数
+   2. 如果是连接池，从池中获取连接后执行
+   3. 自动管理连接的打开和关闭
+   
+   【参数】
+   system - 连接、连接池或系统配置映射
+   f - 要执行的函数
+   params - 传递给函数的参数
+   
+   【返回值】
+   函数的返回值"
   [system f & params]
   (cond
     (connection? system)
@@ -644,7 +846,16 @@
       nil)))
 
 (defn tjson
-  "Encode as transit json."
+  "编码为 Transit JSON 格式。
+   
+   【功能】
+   将数据编码为 Transit JSON 格式的 PGobject，用于存储到 jsonb 列。
+   
+   【参数】
+   data - 要编码的数据
+   
+   【返回值】
+   设置好的 PGobject 实例"
   [data]
   (when data
     (doto (org.postgresql.util.PGobject.)
@@ -652,7 +863,16 @@
       (.setValue (t/encode-str data {:type :json-verbose})))))
 
 (defn json
-  "Encode as plain json."
+  "编码为普通 JSON 格式。
+   
+   【功能】
+   将数据编码为普通 JSON 格式的 PGobject，用于存储到 jsonb 列。
+   
+   【参数】
+   data - 要编码的数据
+   
+   【返回值】
+   设置好的 PGobject 实例"
   [data]
   (when data
     (doto (org.postgresql.util.PGobject.)
@@ -662,10 +882,21 @@
 ;; --- Locks
 
 (def ^:private siphash-state
+  "SipHash 状态容器，用于 UUID 到哈希码的转换。"
   (SipHasher/container
    (uuid/get-bytes uuid/zero)))
 
 (defn uuid->hash-code
+  "将 UUID 转换为哈希码。
+   
+   【功能】
+   使用 SipHash 算法将 UUID 转换为哈希码，用于数据库 Advisory Lock。
+   
+   【参数】
+   o - UUID 或整数
+   
+   【返回值】
+   哈希码（长整数）"
   [o]
   (.hash ^SipHasherContainer siphash-state
          ^bytes (uuid/get-bytes o)))
@@ -678,22 +909,61 @@
     :else (throw (IllegalArgumentException. "uuid or number allowed"))))
 
 (defn xact-lock!
+  "获取事务级 Advisory Lock（阻塞）。
+   
+   【功能】
+   获取指定键的事务级排他 Advisory Lock。如果锁已被占用，则阻塞等待。
+   
+   【参数】
+   conn - 数据库连接
+   n - 锁键（UUID 或整数）
+   
+   【返回值】
+   始终返回 true"
   [conn n]
   (let [n (xact-check-param n)]
     (exec-one! conn ["select pg_advisory_xact_lock(?::bigint) as lock" n])
     true))
 
 (defn xact-try-lock!
+  "尝试获取事务级 Advisory Lock（非阻塞）。
+   
+   【功能】
+   尝试获取指定键的事务级排他 Advisory Lock。如果锁已被占用，立即返回 false。
+   
+   【参数】
+   conn - 数据库连接
+   n - 锁键（UUID 或整数）
+   
+   【返回值】
+   成功获取锁返回 true，否则返回 false"
   [conn n]
   (let [n   (xact-check-param n)
         row (exec-one! conn ["select pg_try_advisory_xact_lock(?::bigint) as lock" n])]
     (:lock row)))
 
 (defn sql-exception?
+  "检查异常是否是 SQL 异常。
+   
+   【参数】
+   cause - 要检查的异常
+   
+   【返回值】
+   是 SQL 异常返回 true"
   [cause]
   (instance? java.sql.SQLException cause))
 
 (defn connection-error?
+  "检查异常是否是数据库连接错误。
+   
+   【功能】
+   检查 SQL 异常的状态码是否属于连接错误类型。
+   
+   【参数】
+   cause - 要检查的异常
+   
+   【返回值】
+   是连接错误返回 true"
   [cause]
   (and (sql-exception? cause)
        (contains? #{"08003" "08006" "08001" "08004"}

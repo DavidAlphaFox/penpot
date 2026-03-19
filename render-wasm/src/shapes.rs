@@ -1,3 +1,27 @@
+//! =============================================================================
+//! 形状模块 (Shapes Module)
+//! =============================================================================
+//!
+//! 【模块概述】
+//! 本模块定义了 Penpot 中所有设计元素的形状类型，包括框架、组、矩形、路径、文本等。
+//! 形状是渲染引擎的核心数据模型，所有视觉元素都表示为 Shape 结构。
+//!
+//! 【核心概念】
+//! 1. 形状类型 (ShapeType) - 枚举所有支持的形状类型
+//! 2. 边界计算 (Bounds) - 形状的包围盒计算
+//! 3. 扩展矩形 (ExtRect) - 包含效果的扩展边界
+//! 4. 变换 (Transform) - 形状的矩阵变换
+//! 5. 填充和描边 (Fills & Strokes) - 视觉样式
+//! 6. 遮罩和裁剪 (Mask & Clip) - 内容裁剪控制
+//! 7. 修饰符 (Modifiers) - 网格布局等高级功能
+//!
+//! 【依赖关系】
+//! - skia_safe - Skia 图形库绑定
+//! - uuid::Uuid - 形状标识符
+//! - math 模块 - 矩阵和边界计算
+//!
+//! =============================================================================
+
 use skia_safe::{self as skia};
 
 use indexmap::IndexSet;
@@ -53,10 +77,24 @@ use crate::math::{self, Bounds, Matrix, Point};
 
 use crate::state::ShapesPoolRef;
 
+/// 最小可见尺寸 - 小于此尺寸的形状被视为视觉上不重要
 const MIN_VISIBLE_SIZE: f32 = 2.0;
+/// 抗锯齿阈值 - 超过此尺寸启用抗锯齿
 const ANTIALIAS_THRESHOLD: f32 = 15.0;
+/// 最小描边宽度 - 小于此宽度的描边不渲染
 const MIN_STROKE_WIDTH: f32 = 0.001;
 
+/// 形状类型枚举
+///
+/// # 变体说明
+/// - `Frame` - 框架/画板
+/// - `Group` - 编组
+/// - `Bool` - 布尔运算形状
+/// - `Rect` - 矩形
+/// - `Path` - 路径
+/// - `Text` - 文本
+/// - `Circle` - 圆形
+/// - `SVGRaw` - 原始 SVG
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Frame(Frame),
@@ -142,6 +180,7 @@ impl Type {
     }
 }
 
+/// 约束水平对齐方式
 #[derive(Debug, Clone, PartialEq, Copy)]
 pub enum ConstraintH {
     Left,
@@ -151,6 +190,7 @@ pub enum ConstraintH {
     Scale,
 }
 
+/// 垂直对齐方式
 #[derive(Debug, Clone, PartialEq, Copy)]
 pub enum VerticalAlign {
     Top,
@@ -158,6 +198,7 @@ pub enum VerticalAlign {
     Bottom,
 }
 
+/// 约束垂直对齐方式
 #[derive(Debug, Clone, PartialEq, Copy)]
 pub enum ConstraintV {
     Top,
@@ -167,50 +208,102 @@ pub enum ConstraintV {
     Scale,
 }
 
+/// 颜色类型别名
 pub type Color = skia::Color;
 
+/// 形状结构体 - 渲染引擎中的核心数据模型
+///
+/// # 字段说明
+/// - `id`: 形状的唯一标识符
+/// - `parent_id`: 父级形状 ID
+/// - `shape_type`: 形状类型（框架、组、矩形等）
+/// - `children`: 子形状 ID 列表
+/// - `selrect`: 选择矩形（形状的基本边界）
+/// - `transform`: 变换矩阵
+/// - `rotation`: 旋转角度
+/// - `constraint_h/v`: 约束条件
+/// - `clip_content`: 是否裁剪内容
+/// - `fills`: 填充样式列表
+/// - `strokes`: 描边样式列表
+/// - `blend_mode`: 混合模式
+/// - `vertical_align`: 垂直对齐
+/// - `blur`: 模糊效果
+/// - `opacity`: 不透明度
+/// - `hidden`: 是否隐藏
+/// - `svg`: SVG DOM
+/// - `svg_attrs`: SVG 属性
+/// - `shadows`: 阴影列表
+/// - `layout_item`: 布局项数据
+/// - `bounds`: 边界缓存
+/// - `extrect_cache`: 扩展矩形缓存
+/// - `svg_transform`: SVG 变换
+/// - `ignore_constraints`: 是否忽略约束
+/// - `deleted`: 是否已删除
 #[derive(Debug, Clone)]
 pub struct Shape {
+    /// 形状 UUID
     pub id: Uuid,
+    /// 父级 UUID
     pub parent_id: Option<Uuid>,
+    /// 形状类型数据
     pub shape_type: Type,
+    /// 子形状 UUID 列表
     pub children: Vec<Uuid>,
+    /// 选择矩形
     pub selrect: math::Rect,
+    /// 变换矩阵
     pub transform: Matrix,
+    /// 旋转角度（弧度）
     pub rotation: f32,
+    /// 水平约束
     pub constraint_h: Option<ConstraintH>,
+    /// 垂直约束
     pub constraint_v: Option<ConstraintV>,
+    /// 是否裁剪内容
     pub clip_content: bool,
+    /// 填充样式列表
     pub fills: Vec<Fill>,
+    /// 描边样式列表
     pub strokes: Vec<Stroke>,
+    /// 混合模式
     pub blend_mode: BlendMode,
+    /// 垂直对齐方式
     pub vertical_align: VerticalAlign,
+    /// 模糊效果
     pub blur: Option<Blur>,
+    /// 不透明度
     pub opacity: f32,
+    /// 是否隐藏
     pub hidden: bool,
+    /// SVG DOM
     pub svg: Option<skia::svg::Dom>,
+    /// SVG 属性
     pub svg_attrs: Option<SvgAttrs>,
+    /// 阴影列表
     pub shadows: Vec<Shadow>,
+    /// 布局项数据
     pub layout_item: Option<LayoutItem>,
+    /// 边界缓存（惰性计算）
     pub bounds: OnceCell<math::Bounds>,
+    /// 扩展矩形缓存 (Rect, scale)
     pub extrect_cache: RefCell<Option<(math::Rect, u32)>>,
+    /// SVG 变换矩阵
     pub svg_transform: Option<Matrix>,
+    /// 是否忽略约束
     pub ignore_constraints: bool,
+    /// 是否已删除
     deleted: bool,
 }
 
-// Returns all ancestor shapes of this shape, traversing up the parent hierarchy
-//
-// This function walks up the parent chain starting from this shape's parent,
-// collecting all ancestor IDs. It stops when it reaches a nil UUID or when
-// an ancestor is hidden (unless include_hidden is true).
-//
-// # Arguments
-// * `shapes` - The shapes pool containing all shapes
-// * `include_hidden` - Whether to include hidden ancestors in the result
-//
-// # Returns
-// A set of ancestor UUIDs in traversal order (closest ancestor first)
+/// 返回所有祖先形状
+///
+/// # 参数
+/// - `shapes` - 形状 ID 列表
+/// - `shapes_pool` - 形状池引用
+/// - `include_hidden` - 是否包含隐藏的祖先
+///
+/// # 返回值
+/// 祖先 UUID 列表（从最近的祖先开始）
 pub fn all_with_ancestors(
     shapes: &[Uuid],
     shapes_pool: ShapesPoolRef,
@@ -258,6 +351,15 @@ pub fn all_with_ancestors(
 }
 
 impl Shape {
+    /// 获取相对点
+    ///
+    /// # 参数
+    /// - `point`: 世界坐标中的点
+    /// - `view_matrix`: 视图矩阵
+    /// - `shape_matrix`: 形状矩阵
+    ///
+    /// # 返回值
+    /// 形状坐标系统中的点
     pub fn get_relative_point(
         point: &Point,
         view_matrix: &Matrix,
@@ -270,6 +372,10 @@ impl Shape {
         Some(shape_relative_point)
     }
 
+    /// 创建新形状
+    ///
+    /// # 参数
+    /// - `id`: 形状 UUID
     pub fn new(id: Uuid) -> Self {
         Self {
             id,
@@ -812,23 +918,13 @@ impl Shape {
         }
     }
 
-    /// Calculates the bounding rectangle for a selrect shape's shadow, taking into account
-    /// stroke widths and shadow properties.
+    /// 计算选择矩形的阴影边界
     ///
-    /// This method computes the expanded bounds that would be needed to fully render
-    /// the shadow effect for a shape. It considers:
-    /// - The base bounds (selection rectangle)
-    /// - Maximum stroke width across all strokes, accounting for stroke rendering kind
-    /// - Shadow offset (x, y displacement)
-    /// - Shadow blur radius (expands bounds outward)
-    /// - Whether the shadow is hidden
+    /// # 参数
+    /// - `shadow`: 阴影配置
     ///
-    /// # Arguments
-    /// * `shadow` - The shadow configuration containing offset, blur, and visibility
-    ///
-    /// # Returns
-    /// A `math::Rect` representing the bounding rectangle that encompasses the shadow.
-    /// Returns an empty rectangle if the shadow is hidden.
+    /// # 返回值
+    /// 包含阴影的边界矩形。如果阴影隐藏则返回空矩形。
     pub fn get_selrect_shadow_bounds(&self, shadow: &Shadow) -> math::Rect {
         let base_bounds = self.selrect();
         let mut rect = skia::Rect::new_empty();
@@ -1499,9 +1595,10 @@ impl Shape {
         !self.fills.is_empty()
     }
 
-    /// Determines if this frame or group can be flattened (doesn't affect children visually)
-    /// A container can be flattened if it has no visual effects that affect its children
-    /// and doesn't render its own content (no fills/strokes)
+    /// 检查是否可以展平（不影響子元素视觉）
+    ///
+    /// # 说明
+    /// 可以展平的容器没有影响子元素视觉的效果，也不渲染自己的内容。
     pub fn can_flatten(&self) -> bool {
         // Only frames and groups can be flattened
         if !matches!(self.shape_type, Type::Frame(_) | Type::Group(_)) {
@@ -1554,8 +1651,10 @@ impl Shape {
         true
     }
 
-    /// Checks if this shape needs a layer for rendering due to visual effects
-    /// (opacity < 1.0, non-default blend mode, or frame clip layer blur)
+    /// 检查是否需要单独的渲染层
+    ///
+    /// # 说明
+    /// 当形状有不透明度、非默认混合模式或框架裁剪模糊时需要单独的层。
     pub fn needs_layer(&self) -> bool {
         self.opacity() < 1.0
             || self.blend_mode().0 != skia::BlendMode::SrcOver
@@ -1581,8 +1680,10 @@ impl Shape {
         }
     }
 
-    /// Checks if this shape has visual effects that might extend its bounds beyond selrect
-    /// Shapes with these effects require expensive extrect calculation for accurate visibility checks
+    /// 检查是否有扩展边界的效果
+    ///
+    /// # 说明
+    /// 有阴影、模糊、描边、变换或旋转的形状需要昂贵的边界计算来准确检测可见性。
     pub fn has_effects_that_extend_bounds(&self) -> bool {
         !self.shadows.is_empty()
             || self.blur.is_some()

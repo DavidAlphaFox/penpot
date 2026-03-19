@@ -1,3 +1,30 @@
+;; =============================================================================
+;; 应用入口 (Application Entry Point)
+;; =============================================================================
+;;
+;; 【模块概述】
+;; 本模块是 Penpot 后端应用程序的入口点，负责初始化和配置整个应用系统。
+;; 使用 Integrant 框架进行依赖注入和组件管理，协调数据库、Redis、HTTP 服务器、
+;; RPC 服务、消息总线等各种组件的初始化和生命周期管理。
+;;
+;; 【核心概念】
+;; 1. Integrant - 依赖注入框架，用于管理应用组件的生命周期
+;; 2. System Config - 系统配置映射，定义了所有组件及其依赖关系
+;; 3. Worker Config - 后台任务工作器配置，用于调度定期任务
+;; 4. Metrics - 指标收集，用于监控应用运行状态
+;;
+;; 【依赖关系】
+;; - app.config - 配置管理，提供配置获取接口
+;; - app.db - 数据库连接池管理
+;; - app.redis - Redis 客户端和连接池
+;; - app.msgbus - 基于 Redis 的消息总线
+;; - app.http - HTTP 服务器和路由
+;; - app.rpc - RPC 方法处理
+;; - app.storage - 文件存储抽象层
+;; - app.worker - 后台任务调度器
+;;
+;; =============================================================================
+
 ;; This Source Code Form is subject to the terms of the Mozilla Public
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -49,6 +76,23 @@
    [nrepl.server :as nrepl]
    [promesa.exec :as px])
   (:gen-class))
+
+;; =============================================================================
+;; 默认指标定义 (Default Metrics Definition)
+;; =============================================================================
+;;
+;; 【概述】
+;; 定义应用程序的所有默认指标，用于 Prometheus 监控。
+;; 包含 RPC 方法调用计时、WebSocket 连接状态、会话管理、
+;; 后台任务执行计时等各类指标。
+;;
+;; 【指标类型】
+;; - counter: 计数器，只增不减
+;; - gauge: 仪表盘，可增可减
+;; - histogram: 直方图，用于延迟分布统计
+;; - summary: 摘要，类似于直方图
+;;
+;; =============================================================================
 
 (def default-metrics
   {:update-file-changes
@@ -153,6 +197,24 @@
     ::mdef/help "Histogram of dispatch handler"
     ::mdef/labels []
     ::mdef/type :histogram}})
+
+;; =============================================================================
+;; 系统配置 (System Configuration)
+;; =============================================================================
+;;
+;; 【概述】
+;; 定义 Integrant 系统的完整组件配置映射。每个键对应一个组件，
+;; 值是组件的配置参数。使用 ig/ref 表示组件间的依赖关系。
+;;
+;; 【组件分类】
+;; 1. 基础设施层：数据库连接池、Redis 客户端、消息总线
+;; 2. HTTP 层：HTTP 服务器、路由、WebSocket
+;; 3. 业务层：RPC 方法、会话管理、邮件服务
+;; 4. 存储层：文件存储（S3、本地文件系统）
+;; 5. 后台任务：任务注册表、调度器、执行器
+;; 6. 监控层：指标收集、调试端点
+;;
+;; =============================================================================
 
 (def system-config
   {::db/pool
@@ -524,6 +586,29 @@
    {::sto.fs/directory (or (cf/get :storage-assets-fs-directory)
                            (cf/get :objects-storage-fs-directory))}})
 
+;; =============================================================================
+;; 后台任务配置 (Worker Configuration)
+;; =============================================================================
+;;
+;; 【概述】
+;; 定义后台任务调度器和执行器的配置。包括：
+;; 1. Cron 任务调度：定时执行数据清理、归档等任务
+;; 2. 任务分发器：从 Redis 队列中获取任务并分发
+;; 3. 任务执行器：并行执行任务的 worker 线程池
+;;
+;; 【调度任务】
+;; - session-gc: 每日会话清理
+;; - objects-gc: 每日对象垃圾回收
+;; - storage-gc-deleted: 每日已删除文件清理
+;; - storage-gc-touched: 每日未访问文件清理
+;; - tasks-gc: 每日任务垃圾回收
+;; - file-gc-scheduler: 每日文件 GC 调度
+;; - telemetry: 每 3 小时和 23 点发送遥测数据
+;; - audit-log-archive: 每 5 分钟归档审计日志（可选）
+;; - audit-log-gc: 每 5 分钟清理审计日志（可选）
+;;
+;; =============================================================================
+
 (def worker-config
   {::wrk/cron
    {::wrk/registry            (ig/ref ::wrk/registry)
@@ -583,9 +668,21 @@
     ::db/pool         (ig/ref ::db/pool)}})
 
 
+;; 全局系统实例：存储当前运行的 Integrant 系统实例
+;; 初始值为 nil，启动后被设置为初始化后的系统映射
 (def system nil)
 
 (defn start
+  "启动应用程序系统。
+   
+   【功能】
+   1. 验证配置是否有效
+   2. 加载所有命名空间
+   3. 初始化 Integrant 系统
+   4. 启动所有组件
+   
+   【返回值】
+   初始化后的系统实例"
   []
   (cf/validate!)
   (ig/load-namespaces (merge system-config worker-config))
@@ -602,37 +699,76 @@
          :version (:full cf/version)))
 
 (defn start-custom
+  "使用自定义配置启动应用程序系统。
+   
+   【参数】
+   config - 自定义的系统配置映射
+   
+   【返回值】
+   初始化后的系统实例"
   [config]
   (ig/load-namespaces config)
   (alter-var-root #'system (fn [sys]
                              (when sys (ig/halt! sys))
                              (-> config
                                  (ig/expand)
-                                 (ig/init)))))
+                                 (ig/init))))
 
 (defn stop
+  "停止应用程序系统。
+   
+   【功能】
+   关闭所有组件并释放资源"
   []
   (alter-var-root #'system (fn [sys]
                              (when sys (ig/halt! sys))
                              nil)))
+
 (defn restart
+  "重新启动应用程序系统。
+   
+   【功能】
+   1. 停止当前系统
+   2. 使用 repl/refresh 重新加载修改的代码
+   3. 自动调用 start 重新启动"
   []
   (stop)
   (repl/refresh :after 'app.main/start))
 
 (defn restart-all
+  "完全重新启动应用程序系统。
+   
+   【功能】
+   1. 停止当前系统
+   2. 使用 repl/refresh-all 重新加载所有代码
+   3. 自动调用 start 重新启动"
   []
   (stop)
   (repl/refresh-all :after 'app.main/start))
 
 (defmacro run-bench
+  "运行基准测试宏。
+   
+   【参数】
+   exprs - 要进行基准测试的表达式
+   
+   【返回值】
+   基准测试结果"
   [& exprs]
   `(do
      (require 'criterium.core)
      (criterium.core/with-progress-reporting (crit/quick-bench (do ~@exprs) :verbose))))
 
 (defn run-tests
-  ([] (run-tests #"^backend-tests.*-test$"))
+  "运行测试。
+   
+   【参数】
+   o - 可选的测试选择器（正则表达式模式或符号）
+   
+   【返回值】
+   测试运行结果"
+  ([]
+   (run-tests #"^backend-tests.*-test$"))
   ([o]
    (repl/refresh)
    (cond
@@ -648,6 +784,19 @@
 (repl/disable-reload! (find-ns 'integrant.core))
 
 (defn -main
+  "应用程序主入口点。
+   
+   【功能】
+   1. 可选启动 nREPL 服务器（如果启用了标志）
+   2. 调用 start 启动应用
+   3. 阻塞等待 Promise 完成
+   4. 捕获并打印任何启动异常
+   
+   【参数】
+   _args - 命令行参数（当前未使用）
+   
+   【返回值】
+   无返回值，异常时退出程序"
   [& _args]
   (try
     (let [p (promise)]

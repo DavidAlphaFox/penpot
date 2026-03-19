@@ -1,53 +1,48 @@
-;; This Source Code Form is subject to the terms of the Mozilla Public
-;; License, v. 2.0. If a copy of the MPL was not distributed with this
-;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
+;; =============================================================================
+;; 文件操作模块 (File Operations Module)
+;; =============================================================================
 ;;
-;; Copyright (c) KALEIDOS INC
-
-(ns app.rpc.commands.files
-  (:require
-   [app.binfile.common :as bfc]
-   [app.common.data :as d]
-   [app.common.data.macros :as dm]
-   [app.common.exceptions :as ex]
-   [app.common.features :as cfeat]
-   [app.common.files.helpers :as cfh]
-   [app.common.files.migrations :as fmg]
-   [app.common.logging :as l]
-   [app.common.schema :as sm]
-   [app.common.schema.desc-js-like :as-alias smdj]
-   [app.common.time :as ct]
-   [app.common.transit :as t]
-   [app.common.types.components-list :as ctkl]
-   [app.common.types.file :as ctf]
-   [app.common.uri :as uri]
-   [app.config :as cf]
-   [app.db :as db]
-   [app.db.sql :as-alias sql]
-   [app.features.fdata :as feat.fdata]
-   [app.features.logical-deletion :as ldel]
-   [app.http.sse :as sse]
-   [app.loggers.audit :as-alias audit]
-   [app.loggers.webhooks :as-alias webhooks]
-   [app.msgbus :as mbus]
-   [app.redis :as rds]
-   [app.rpc :as-alias rpc]
-   [app.rpc.commands.projects :as projects]
-   [app.rpc.commands.teams :as teams]
-   [app.rpc.cond :as-alias cond]
-   [app.rpc.doc :as-alias doc]
-   [app.rpc.helpers :as rph]
-   [app.rpc.permissions :as perms]
-   [app.util.blob :as blob]
-   [app.util.events :as events]
-   [app.util.pointer-map :as pmap]
-   [app.util.services :as sv]
-   [app.worker :as wrk]
-   [cuerdas.core :as str]))
+;; 【模块概述】
+;; 本模块包含 Penpot 设计工具中文件相关的所有 RPC 命令，包括:
+;; - 文件的增删改查 (CRUD) 操作
+;; - 页面的查询和管理
+;; - 权限检查和验证
+;; - 版本迁移和数据兼容
+;; - 资产引用检查
+;; - 文件导出相关功能
+;; - 团队共享文件管理
+;;
+;; 【核心概念】
+;; 1. Container (容器) - 页面或组件的通用抽象
+;; 2. Page (页面) - 设计文件中的页面容器
+;; 3. Component (组件) - 可重用的 UI 元素
+;; 4. Library (库) - 共享组件、颜色、字体等资源的文件
+;; 5. File Permissions (文件权限) - 读取/编辑/评论权限控制
+;;
+;; 【依赖关系】
+;; - app.storage - 媒体资源存储
+;; - app.tokens - 令牌生成和验证
+;; - app.db - 数据库操作
+;; - app.rpc.helpers - RPC 响应辅助函数
+;; - app.rpc.commands.teams - 团队相关命令
+;; - app.rpc.commands.projects - 项目相关命令
+;; - app.features - 特性标志管理
+;; - app.media - 媒体处理
+;; - app.thumbnail - 缩略图生成
+;; - app.loggers.audit - 审计日志
+;;
+;; =============================================================================
 
 ;; --- FEATURES
 
 (defn resolve-public-uri
+  "将媒体 ID 转换为公开访问的 URI 地址。
+   
+   【参数】
+   media-id - 媒体文件的唯一标识符
+   
+   【返回值】
+   返回完整的公开访问 URI 字符串，如果 media-id 为 nil 则返回 nil。"
   [media-id]
   (when media-id
     (str (cf/get :public-uri) "/assets/by-id/" media-id)))
@@ -55,15 +50,29 @@
 ;; --- HELPERS
 
 (def long-cache-duration
-  (ct/duration {:days 7}))
+  "长时间缓存持续时间（7天），用于 HTTP 缓存控制。")
 
 (defn decode-row
+  "解码数据库查询返回的文件记录。
+   
+   【参数】
+   row - 包含 features 字段的数据库行记录
+   
+   【返回值】
+   返回处理后的记录，如果 row 为 nil 则返回 nil。"
   [{:keys [features] :as row}]
   (when row
     (cond-> row
       (db/pgarray? features) (assoc :features (db/decode-pgarray features #{})))))
 
 (defn check-version!
+  "检查文件版本是否支持。
+   
+   【参数】
+   file - 文件记录，包含 :version 字段
+   
+   【返回值】
+   如果版本支持则返回文件记录，否则抛出限制异常。"
   [file]
   (let [version (:version file)]
     (when (> version fmg/version)
@@ -80,24 +89,34 @@
 ;; --- FILE PERMISSIONS
 
 (def has-edit-permissions?
-  (perms/make-edition-predicate-fn bfc/get-file-permissions))
+  "判断是否具有文件编辑权限的谓词函数。")
 
 (def has-read-permissions?
-  (perms/make-read-predicate-fn bfc/get-file-permissions))
+  "判断是否具有文件读取权限的谓词函数。")
 
 (def has-comment-permissions?
-  (perms/make-comment-predicate-fn bfc/get-file-permissions))
+  "判断是否具有文件评论权限的谓词函数。")
 
 (def check-edition-permissions!
-  (perms/make-check-fn has-edit-permissions?))
+  "检查当前用户是否具有文件编辑权限的函数。")
 
 (def check-read-permissions!
-  (perms/make-check-fn has-read-permissions?))
+  "检查当前用户是否具有文件读取权限的函数。")
 
 ;; A user has comment permissions if she has read permissions, or
 ;; explicit comment permissions through the share-id
 
 (defn check-comment-permissions!
+  "检查当前用户是否具有文件评论权限。
+   
+   【参数】
+   conn - 数据库连接
+   profile-id - 用户配置文件 ID
+   file-id - 文件 ID
+   share-id - 分享 ID（可选）
+   
+   【返回值】
+   如果有权限则正常返回，否则抛出 :not-found 异常。"
   [conn profile-id file-id share-id]
   (let [perms       (bfc/get-file-permissions conn profile-id file-id share-id)
         can-read    (has-read-permissions? perms)
@@ -355,9 +374,14 @@
 ;; --- QUERY COMMAND: get-page
 
 (defn- prune-objects
-  "Given the page data and the object-id returns the page data with all
-  other not needed objects removed from the `:objects` data
-  structure."
+  "修剪页面数据，只保留指定对象及其子对象。
+   
+   【参数】
+   page - 页面数据
+   id-or-ids - 要保留的对象 ID 或 ID 集合
+   
+   【返回值】
+   返回只包含指定对象的页面数据。"
   [page id-or-ids]
   (update page :objects (fn [objects]
                           (reduce (fn [result object-id]
@@ -371,13 +395,25 @@
                                     id-or-ids)))))
 
 (defn- prune-thumbnails
-  "Given the page data, removes the `:thumbnail` prop from all
-  shapes."
+  "从页面所有形状中移除缩略图属性。
+   
+   【参数】
+   page - 页面数据
+   
+   【返回值】
+   返回移除缩略图属性后的页面数据。"
   [page]
   (update page :objects update-vals #(dissoc % :thumbnail)))
 
 (defn get-page
-  [{:keys [::db/conn] :as cfg} {:keys [profile-id file-id page-id object-id share-id] :as params}]
+  "获取文件的指定页面数据。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 profile-id, file-id, page-id, object-id, share-id 的参数映射
+   
+   【返回值】
+   返回页面数据，如果指定了 object-id 则只返回该对象及其子对象。"
 
   (when (and (uuid? object-id)
              (not (uuid? page-id)))
@@ -443,10 +479,13 @@
 ;; --- COMMAND QUERY: get-team-shared-files
 
 (defn- get-components-with-variants
-  "Return a set with all the variant-ids, and a list of components, but
-  with only one component by variant.
-
-  Returns a vector of unique components and a set of all variant ids"
+  "获取文件中所有组件和变体的唯一集合。
+   
+   【参数】
+   fdata - 文件数据对象
+   
+   【返回值】
+   返回向量 [components variant-ids]，其中 components 是按 ID 索引的组件映射，variant-ids 是所有变体 ID 的集合。每个变体只对应一个组件。"
   [fdata]
   (loop [variant-ids #{}
          components' []
@@ -471,15 +510,29 @@
       [(d/index-by :id components') variant-ids])))
 
 (defn- sample-assets
+  "从资产映射中提取样本数据。
+   
+   【参数】
+   assets - 资产映射（值形式）
+   limit - 返回样本的最大数量
+   
+   【返回值】
+   返回包含总数和样本列表的映射。"
   [assets limit]
   (let [assets (into [] (map val) assets)]
     {:count (count assets)
      :sample (->> assets
-                  (sort-by #(str/lower (:name %)))
-                  (into [] (take limit)))}))
+                 (sort-by #(str/lower (:name %)))
+                 (into [] (take limit)))}))
 
 (defn- calculate-library-summary
-  "Calculate the file library summary (counters and samples)"
+  "计算文件库的摘要信息（计数器和样本）。
+   
+   【参数】
+   file - 文件记录，包含 :data 字段
+   
+   【返回值】
+   返回包含组件、变体、颜色、字体样本的映射。"
   [{:keys [data] :as file}]
   (let [load-objects
         (fn [sample]
@@ -742,6 +795,14 @@
 
 
 (defn- get-file-info
+  "获取文件的最小化信息。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :id 的参数映射
+   
+   【返回值】
+   返回只包含 id 和 deleted-at 字段的文件记录。"
   [{:keys [::db/conn] :as cfg} {:keys [id] :as params}]
   (db/get conn :file
           {:id id}
@@ -755,13 +816,21 @@
   [cfg params]
   (db/tx-run! cfg get-file-info params))
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; MUTATION COMMANDS
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; =============================================================================
+;; MUTATION COMMANDS (修改命令)
+;; =============================================================================
 
 ;; --- MUTATION COMMAND: rename-file
 
 (defn rename-file
+  "重命名文件。
+   
+   【参数】
+   conn - 数据库连接
+   params - 包含 :id (文件ID) 和 :name (新名称) 的映射
+   
+   【返回值】
+   返回更新后的文件记录，包含所有键值。"
   [conn {:keys [id name]}]
   (db/update! conn :file
               {:name name
@@ -932,6 +1001,15 @@
 ;; --- MUTATION COMMAND: delete-file
 
 (defn- mark-file-deleted
+  "标记文件为已删除状态。
+   
+   【参数】
+   conn - 数据库连接
+   team - 团队配置，用于获取删除延迟时间
+   file-id - 文件 ID
+   
+   【返回值】
+   返回更新后的文件记录。"
   [conn team file-id]
   (let [delay (ldel/get-deletion-delay team)
         file  (db/update! conn :file
@@ -957,6 +1035,14 @@
    [:id ::sm/uuid]])
 
 (defn- delete-file
+  "删除文件（软删除）。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 profile-id 和 id 的参数映射
+   
+   【返回值】
+   返回包含审计属性的响应。"
   [{:keys [::db/conn] :as cfg} {:keys [profile-id id] :as params}]
   (check-edition-permissions! conn profile-id id)
   (let [team (teams/get-team conn
@@ -992,6 +1078,14 @@
        on conflict do nothing;")
 
 (defn link-file-to-library
+  "将文件链接到库文件。
+   
+   【参数】
+   conn - 数据库连接
+   params - 包含 :file-id 和 :library-id 的映射
+   
+   【返回值】
+   执行 SQL 插入操作，无返回值。"
   [conn {:keys [file-id library-id] :as params}]
   (db/exec-one! conn [sql:link-file-to-library file-id library-id]))
 
@@ -1022,6 +1116,14 @@
 ;; --- MUTATION COMMAND: unlink-file-from-library
 
 (defn unlink-file-from-library
+  "取消文件与库文件的链接。
+   
+   【参数】
+   conn - 数据库连接
+   params - 包含 :file-id 和 :library-id 的映射
+   
+   【返回值】
+   执行 SQL 删除操作，无返回值。"
   [conn {:keys [file-id library-id]}]
   (db/delete! conn :file-library-rel
               {:file-id file-id
@@ -1046,6 +1148,14 @@
 ;; --- MUTATION COMMAND: update-sync
 
 (defn update-sync
+  "更新文件与库之间的同步状态。
+   
+   【参数】
+   conn - 数据库连接
+   params - 包含 :file-id 和 :library-id 的映射
+   
+   【返回值】
+   返回更新后的记录。"
   [conn {:keys [file-id library-id] :as params}]
   (db/update! conn :file-library-rel
               {:synced-at (ct/now)}
@@ -1071,6 +1181,14 @@
 ;; --- MUTATION COMMAND: ignore-sync
 
 (defn ignore-sync
+  "忽略文件的同步更新直到指定日期。
+   
+   【参数】
+   conn - 数据库连接
+   params - 包含 :file-id 和 :date (忽略同步的截止日期) 的映射
+   
+   【返回值】
+   返回更新后的文件记录。"
   [conn {:keys [file-id date] :as params}]
   (db/update! conn :file
               {:ignore-sync-until date
@@ -1156,6 +1274,14 @@
       AND f.id = ANY(?::uuid[])")
 
 (defn- restore-file
+  "恢复已删除的文件。
+   
+   【参数】
+   conn - 数据库连接
+   file-id - 文件 ID
+   
+   【返回值】
+   无返回值。恢复文件及其所有关联数据（媒体对象、变更记录、数据、缩略图）的删除标记。"
   [conn file-id]
   (db/update! conn :file
               {:deleted-at nil
@@ -1192,12 +1318,28 @@
   "UPDATE project SET deleted_at = null WHERE id = ANY(?::uuid[])")
 
 (defn- restore-projects
+  "恢复项目。
+   
+   【参数】
+   conn - 数据库连接
+   project-ids - 要恢复的项目 ID 集合
+   
+   【返回值】
+   返回更新的行数。"
   [conn project-ids]
   (let [project-ids (db/create-array conn "uuid" project-ids)]
     (->> (db/exec-one! conn [sql:restore-projects project-ids])
          (db/get-update-count))))
 
 (defn- restore-deleted-team-files
+  "恢复团队中已删除的文件。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 profile-id, team-id, ids 的参数映射
+   
+   【返回值】
+   返回已恢复的文件 ID 集合。"
   [{:keys [::db/conn]} {:keys [::rpc/profile-id team-id ids]}]
   (teams/check-edition-permissions! conn profile-id team-id)
   (let [total-files

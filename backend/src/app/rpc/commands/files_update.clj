@@ -1,3 +1,33 @@
+;; =============================================================================
+;; 文件更新模块 (File Update Module)
+;; =============================================================================
+;;
+;; 【模块概述】
+;; 本模块负责处理 Penpot 设计工具的文件更新 RPC 命令，包括：
+;; - 更新文件数据和元数据 (update-file)
+;; - 持久化文件更改 (persist-file!)
+;; - 获取文件数据 (get-file)
+;; - 处理变更并验证 (process-changes-and-validate)
+;; - 管理文件库同步 (absorb-library, link-file-to-library 等)
+;;
+;; 【核心概念】
+;; 1. Changes (变更) - 描述文件修改操作的数据结构
+;; 2. Revisions (修订版本) - 文件的修订号 (revn) 和版本号 (vern)
+;; 3. Library (库) - 可共享的设计资源（颜色、组件、字体等）
+;; 4. Pointer Map - 延迟加载机制
+;; 5. Snapshot (快照) - 文件数据的备份
+;;
+;; 【依赖关系】
+;; - app.binfile.common - 二进制文件处理
+;; - app.common.files.changes - 变更处理逻辑
+;; - app.common.files.migrations - 文件迁移
+;; - app.common.files.validate - 文件验证
+;; - app.features.fdata - 文件数据特性
+;; - app.features.file-snapshots - 文件快照
+;; - app.util.pointer-map - 指针映射
+;;
+;; =============================================================================
+
 ;; This Source Code Form is subject to the terms of the Mozilla Public
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -55,6 +85,8 @@
 
 ;; --- SCHEMA
 
+;; 【输入验证模式】
+;; 定义 update-file RPC 方法的输入参数验证模式
 (def ^:private
   schema:update-file
   [:map {:title "update-file"}
@@ -71,6 +103,8 @@
               [:hint-events {:optional true} [:vector [:string {:max 250}]]]]]]
    [:skip-validate {:optional true} ::sm/boolean]])
 
+;; 【输出验证模式】
+;; 定义 update-file RPC 方法的返回值验证模式
 (def ^:private
   schema:update-file-result
   [:vector {:title "update-file-result"}
@@ -87,6 +121,8 @@
 ;; to all clients using it.
 
 (def ^:private library-change-types
+  "定义会影响库（颜色、组件、字体等）的变更类型集合。
+   这些变更需要通知所有使用该库的文件。"
   #{:add-color
     :mod-color
     :del-color
@@ -102,6 +138,7 @@
     :del-typography})
 
 (def ^:private file-change-types
+  "定义直接影响文件的变更类型集合。"
   #{:add-obj
     :mod-obj
     :del-obj
@@ -109,6 +146,13 @@
     :mov-objects})
 
 (defn- library-change?
+  "判断给定的变更是否影响库资源。
+   
+   【参数】
+   change - 变更记录，包含 :type 字段
+   
+   【返回值】
+   返回 true 如果变更类型影响库资源，否则返回 false。"
   [{:keys [type] :as change}]
   (or (contains? library-change-types type)
       (contains? file-change-types type)))
@@ -118,6 +162,22 @@
 ;; database.
 
 (sv/defmethod ::update-file
+  "更新文件数据和元数据的主入口函数。
+   
+   【参数】
+   cfg - 系统配置，包含数据库连接和指标收集器
+   params - 更新参数，包含:
+   - :id - 文件 ID
+   - :session-id - 会话 ID
+   - :revn - 修订版本号
+   - :vern - 版本号
+   - :features - 特性标志（可选）
+   - :changes - 变更列表（可选）
+   - :changes-with-metadata - 带元数据的变更列表（可选）
+   - :skip-validate - 是否跳过验证
+   
+   【返回值】
+   返回变更结果列表，包含修订版本号和延迟变更。"
   {::climit/id [[:update-file/by-profile ::rpc/profile-id]
                 [:update-file/global]]
 
@@ -202,13 +262,21 @@
                              (l/trace :hint "update-file" :time (ct/format-duration elapsed))))))))
 
 (defn- update-file*
-  "Internal function, part of the update-file process, that encapsulates
-  the changes application offload to a separated thread and emit all
-  corresponding notifications.
-
-  Follow the inner implementation to `update-file-data!` function.
-
-  Only intended for internal use on this module."
+  "文件更新的核心内部函数。
+   
+   【参数】
+   cfg - 系统配置，包含数据库连接和时间戳
+   params - 更新参数，包含:
+   - :profile-id - 用户 ID
+   - :file - 文件记录
+   - :team - 团队记录
+   - :features - 特性标志
+   - :changes - 变更列表
+   - :session-id - 会话 ID
+   - :skip-validate - 是否跳过验证
+   
+   【返回值】
+   返回更新后的文件记录和审计属性。"
   [{:keys [::db/conn ::timestamp] :as cfg}
    {:keys [profile-id file team features changes session-id skip-validate] :as params}]
 
@@ -278,15 +346,29 @@
           :team-id    (:team-id file)}}))))
 
 (defn get-file
-  "Get not-decoded file, only decodes the features set."
+  "获取未解码的文件数据。
+   
+   【参数】
+   cfg - 系统配置
+   id - 文件 ID
+   
+   【返回值】
+   返回文件记录，仅解码特性标志集。"
   [cfg id]
   (bfc/get-file cfg id :decode? false :lock-for-share? true))
 
 (defn persist-file!
-  "Function responsible of persisting already encoded file. Should be
-  used together with `get-file` and `update-file-data!`.
-
-  It also updates the project modified-at attr."
+  "持久化已编码的文件数据。
+   
+   【参数】
+   cfg - 系统配置，包含数据库连接
+   file - 已编码的文件记录
+   
+   【返回值】
+   返回更新后的文件记录。同时更新项目的修改时间。
+   
+   【注意】
+   此函数应与 get-file 和 update-file-data! 配合使用。"
   [{:keys [::db/conn ::timestamp] :as cfg} file]
   (let [;; The timestamp can be nil because this function is also
         ;; intended to be used outside of this module
@@ -307,27 +389,44 @@
     (bfc/update-file! cfg file)))
 
 (defn- invalidate-caches!
+  "使文件相关的缓存失效。
+   
+   【参数】
+   cfg - 系统配置
+   file - 文件记录，包含 :id 字段"
   [cfg {:keys [id] :as file}]
   (rds/run! cfg (fn [{:keys [::rds/conn]}]
                   (let [key (str files/file-summary-cache-key-prefix id)]
                     (rds/del conn key)))))
 
 (defn- attach-snapshot
-  "Attach snapshot data to the file. This should be called before the
-  upcoming file operations are applied to the file."
+  "为文件附加快照数据。
+   
+   【参数】
+   cfg - 系统配置
+   migrated? - 文件是否已迁移
+   file - 文件记录
+   
+   【返回值】
+   返回附加了 ::snapshot 元数据的文件记录。"
   [cfg migrated? file]
   (let [snapshot (if migrated? file (fdata/realize cfg file))]
     (assoc file ::snapshot snapshot)))
 
 (defn- update-file-data!
-  "Perform a file data transformation in with all update context setup.
-
-  This function expected not-decoded file and transformation function. Returns
-  an encoded file.
-
-  This function is not responsible of saving the file. It only saves
-  fdata/pointer-map modified fragments."
-
+  "执行文件数据转换，设置所有更新上下文。
+   
+   【参数】
+   cfg - 系统配置
+   file - 未解码的文件记录
+   update-fn - 更新函数
+   args - 传递给更新函数的额外参数
+   
+   【返回值】
+   返回编码后的文件记录。
+   
+   【注意】
+   此函数不负责保存文件，仅保存 fdata/pointer-map 修改的片段。"
   [cfg {:keys [id] :as file} update-fn & args]
   (let [file (update file :data (fn [data]
                                   (-> data
@@ -360,6 +459,13 @@
     (apply update-fn cfg file args)))
 
 (defn- soft-validate-file-schema!
+  "软验证文件 schema 结构。
+   
+   【参数】
+   file - 文件记录
+   
+   【返回值】
+   验证失败时记录错误但不影响流程。"
   [file]
   (try
     (val/validate-file-schema! file)
@@ -367,6 +473,14 @@
       (l/error :hint "file schema validation error" :cause cause))))
 
 (defn- soft-validate-file!
+  "软验证文件数据完整性。
+   
+   【参数】
+   file - 文件记录
+   libs - 库列表
+   
+   【返回值】
+   验证失败时记录错误但不影响流程。"
   [file libs]
   (try
     (val/validate-file! file libs)
@@ -376,6 +490,16 @@
 
 
 (defn- process-changes-and-validate
+  "处理文件变更并执行验证。
+   
+   【参数】
+   cfg - 系统配置
+   file - 文件记录
+   changes - 变更列表
+   skip-validate - 是否跳过验证
+   
+   【返回值】
+   返回处理并验证后的文件记录。"
   [cfg file changes skip-validate]
   (let [;; WARNING: this ruins performance; maybe we need to find
         ;; some other way to do general validation
@@ -423,7 +547,13 @@
     file))
 
 (defn- take-snapshot?
-  "Defines the rule when file `data` snapshot should be saved."
+  "判断是否应该保存文件数据快照。
+   
+   【参数】
+   file - 文件记录，包含 :revn (修订号) 和 :modified-at (修改时间)
+   
+   【返回值】
+   返回 true 如果应该保存快照，否则返回 nil。"
   [{:keys [revn modified-at] :as file}]
   (when (contains? cf/flags :auto-file-snapshot)
     (let [freq    (or (cf/get :auto-file-snapshot-every) 20)
@@ -444,6 +574,14 @@
     order by s.created_at asc")
 
 (defn- get-lagged-changes
+  "获取延迟的变更记录。
+   
+   【参数】
+   conn - 数据库连接
+   params - 包含 :id (文件 ID) 和 :revn (当前修订号)
+   
+   【返回值】
+   返回变更记录列表，每条记录包含解码后的变更数据。"
   [conn {:keys [id revn] :as params}]
   (->> (db/exec! conn [sql:lagged-changes id revn])
        (filter :changes)
@@ -451,6 +589,15 @@
                (update row :changes blob/decode)))))
 
 (defn- send-notifications!
+  "发送文件变更通知。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :team, :changes, :session-id
+   file - 文件记录
+   
+   【返回值】
+   返回 nil。发送消息到消息总线通知所有相关客户端。"
   [cfg {:keys [team changes session-id] :as params} file]
   (let [lchanges (filter library-change? changes)
         msgbus   (::mbus/msgbus cfg)]

@@ -1,4 +1,29 @@
-import { z } from "zod";
+/**
+ * =============================================================================
+ * 执行代码工具模块 (Execute Code Tool)
+ * =============================================================================
+ *
+ * 【模块概述】
+ * 本工具允许 AI 客户端在 Penpot 插件上下文中执行任意 JavaScript 代码：
+ * - 提供对 Penpot API 的完全访问
+ * - 支持通过 storage 对象存储和检索数据
+ * - 支持 console 对象用于调试输出
+ * - 返回代码的执行结果或错误信息
+ *
+ * 【核心概念】
+ * 1. 插件上下文 - 代码在 Penpot 插件环境中执行，拥有完整的 Penpot API 访问权限
+ * 2. penpot 对象 - Penpot API 的主要入口点
+ * 3. penpotUtils 对象 - 工具函数集合
+ * 4. storage 对象 - 跨调用持久化存储的键值空间
+ * 5. console 对象 - 代码执行过程中的日志输出
+ *
+ * 【依赖关系】
+ * - Tool - 工具基类
+ * - ExecuteCodePluginTask - 代码执行任务
+ * - @penpot/mcp-common - 共享类型定义
+ *
+ * =============================================================================
+ */
 import { Tool } from "../Tool";
 import type { ToolResponse } from "../ToolResponse";
 import { TextResponse } from "../ToolResponse";

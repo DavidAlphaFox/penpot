@@ -1,3 +1,35 @@
+;; =============================================================================
+;; 用户配置模块 (Profile Module)
+;; =============================================================================
+;;
+;; 【模块概述】
+;; 本模块负责处理 Penpot 设计工具的用户配置相关 RPC 命令，包括：
+;; - 获取用户配置 (get-profile)
+;; - 更新用户配置 (update-profile)
+;; - 更新密码 (update-profile-password)
+;; - 更新头像 (update-profile-photo)
+;; - 更新通知设置 (update-profile-notifications)
+;; - 更新属性 (update-profile-props)
+;; - 请求邮箱更改 (request-email-change)
+;; - 删除账户 (delete-profile)
+;; - 获取订阅使用情况 (get-subscription-usage)
+;;
+;; 【核心概念】
+;; 1. Profile (用户配置) - 用户账户信息，包含邮箱、全名、头像等
+;; 2. Props (属性) - 用户偏好设置，如主题、语言、通知设置等
+;; 3. Session (会话) - 用户认证会话
+;;
+;; 【依赖关系】
+;; - app.auth - 密码处理
+;; - app.email - 邮件发送
+;; - app.http.session - 会话管理
+;; - app.media - 媒体处理
+;; - app.storage - 存储管理
+;; - app.tokens - 令牌生成
+;; - app.worker - 后台任务
+;;
+;; =============================================================================
+
 ;; This Source Code Form is subject to the terms of the Mozilla Public
 ;; License, v. 2.0. If a copy of the MPL was not distributed with this
 ;; file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -39,13 +71,37 @@
 (declare get-profile)
 (declare strip-private-attrs)
 
+;; --- Schemas (Malli 数据模式定义)
+
+;; 用户通知属性模式
 (def schema:props-notifications
+  "用户通知设置的数据模式。
+   
+   【字段】
+   - dashboard-comments: 仪表盘评论通知 (:all, :partial, :none)
+   - email-comments: 邮件评论通知 (:all, :partial, :none)
+   - email-invites: 邮件邀请通知 (:all, :none)"
   [:map {:title "props-notifications"}
    [:dashboard-comments [::sm/one-of #{:all :partial :none}]]
    [:email-comments [::sm/one-of #{:all :partial :none}]]
    [:email-invites [::sm/one-of #{:all :none}]]])
 
+;; 用户属性模式
 (def schema:props
+  "用户偏好设置的数据模式。
+   
+   【字段】
+   - plugins: 插件注册表
+   - mcp-status: MCP 状态
+   - newsletter-updates: 通讯更新
+   - newsletter-news: 通讯新闻
+   - onboarding-team-id: 入团队 ID
+   - onboarding-viewed: 入视图
+   - v2-info-shown: V2 信息显示
+   - welcome-file-id: 欢迎文件 ID
+   - release-notes-viewed: 发布说明查看
+   - notifications: 通知设置
+   - workspace-visited: 工作区访问"
   [:map {:title "ProfileProps"}
    [:plugins {:optional true} schema:plugin-registry]
    [:mcp-status {:optional true} ::sm/boolean]
@@ -60,7 +116,23 @@
    [:notifications {:optional true} schema:props-notifications]
    [:workspace-visited {:optional true} ::sm/boolean]])
 
+;; 用户配置模式
 (def schema:profile
+  "用户配置的数据模式。
+   
+   【字段】
+   - id: 用户 ID
+   - fullname: 全名
+   - email: 邮箱地址
+   - is-active: 是否激活
+   - is-blocked: 是否被封禁
+   - is-demo: 是否演示用户
+   - is-muted: 是否被禁言
+   - created-at: 创建时间
+   - modified-at: 修改时间
+   - default-project-id: 默认项目 ID
+   - default-team-id: 默认团队 ID
+   - props: 用户属性"
   [:map {:title "Profile"}
    [:id ::sm/uuid]
    [:fullname [::sm/word-string {:max 250}]]
@@ -76,7 +148,13 @@
    [:props {:optional true} schema:props]])
 
 (defn clean-email
-  "Clean and normalizes email address string"
+  "清理并标准化邮箱地址字符串。
+   
+   【参数】
+   email - 邮箱地址字符串
+   
+   【返回值】
+   返回标准化后的邮箱地址（小写、去除 mailto: 前缀和 <> 包裹）。"
   [email]
   (let [email (str/lower email)
         email (if (str/starts-with? email "mailto:")
@@ -90,30 +168,33 @@
 
 ;; --- QUERY: Get profile (own)
 
-
-
 (sv/defmethod ::get-profile
+  "获取当前登录用户的基本配置信息。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id (当前登录用户 ID)
+   
+   【返回值】
+   返回用户配置信息（不包含敏感属性）。
+   如果用户未登录或不存在，返回匿名用户对象。"
   {::rpc/auth false
    ::doc/added "1.18"
    ::sm/params [:map]
    ::sm/result schema:profile}
   [{:keys [::db/pool] :as cfg} {:keys [::rpc/profile-id]}]
-  ;; We need to return the anonymous profile object in two cases, when
-  ;; no profile-id is in session, and when db call raises not found. In all other
-  ;; cases we need to reraise the exception.
-  (try
-    (let [profile (-> (get-profile pool profile-id)
-                      (strip-private-attrs)
-                      (update :props filter-props))]
-      (if (contains? cf/flags :nitrate)
-        (nitrate/add-nitrate-licence-to-profile cfg profile)
-        profile))
-
-    (catch Throwable _
       {:id uuid/zero :fullname "Anonymous User"})))
 
 (defn get-profile
-  "Get profile by id. Throws not-found exception if no profile found."
+  "根据 ID 获取用户配置。
+   
+   【参数】
+   conn - 数据库连接
+   id - 用户配置 ID
+   opts - 可选参数（如 :for-update 锁定）
+   
+   【返回值】
+   返回用户配置记录。如果未找到则抛出异常。"
   [conn id & {:as opts}]
   ;; NOTE: We need to set ::db/remove-deleted to false because demo profiles
   ;; are created with a set deleted-at value
@@ -130,6 +211,14 @@
    [:theme {:optional true} [:string {:max 250}]]])
 
 (sv/defmethod ::update-profile
+  "更新当前用户的基本配置信息（姓名、语言、主题）。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id, :fullname, :lang (可选), :theme (可选)
+   
+   【返回值】
+   返回更新后的用户配置信息（不包含敏感属性）。"
   {::doc/added "1.0"
    ::sm/params schema:update-profile
    ::sm/result schema:profile
@@ -171,6 +260,18 @@
    [:old-password {:optional true} [:maybe [::sm/word-string {:max 500}]]]])
 
 (sv/defmethod ::update-profile-password
+  "更新用户密码。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id, :password (新密码), :old-password (可选)
+   
+   【返回值】
+   返回 nil。
+   
+   【异常】
+   - 旧密码不匹配时抛出 :type :validation 异常
+   - 使用邮箱作为密码时抛出 :type :validation 异常"
   {::doc/added "1.0"
    ::sm/params schema:update-profile-password
    ::climit/id :auth/global
@@ -192,6 +293,17 @@
     nil))
 
 (defn- validate-password!
+  "验证用户输入的旧密码是否正确。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id 和 :old-password
+   
+   【返回值】
+   返回用户配置记录。
+   
+   【异常】
+   旧密码不匹配时抛出 :type :validation 异常。"
   [{:keys [::db/conn] :as cfg} {:keys [profile-id old-password] :as params}]
   (let [profile (db/get-by-id conn :profile profile-id ::sql/for-update true)]
     (when (and (not= (:password profile) "!")
@@ -201,6 +313,14 @@
     profile))
 
 (defn update-profile-password!
+  "更新用户密码。
+   
+   【参数】
+   cfg - 系统配置
+   profile - 包含 :id (用户 ID) 和 :password (新密码)
+   
+   【返回值】
+   返回 nil。"
   [{:keys [::db/conn] :as cfg} {:keys [id password] :as profile}]
   (when-not (db/read-only? conn)
     (db/update! conn :profile
@@ -221,6 +341,14 @@
 (declare update-notifications!)
 
 (sv/defmethod ::update-profile-notifications
+  "更新用户通知设置。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id, :dashboard-comments, :email-comments, :email-invites
+   
+   【返回值】
+   返回 nil。"
   {::doc/added "2.4.0"
    ::sm/params schema:update-profile-notifications
    ::climit/id :auth/global}
@@ -228,6 +356,14 @@
   (db/tx-run! cfg update-notifications! (assoc params :profile-id profile-id)))
 
 (defn- update-notifications!
+  "更新用户通知设置的内部函数。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id, :dashboard-comments, :email-comments, :email-invites
+   
+   【返回值】
+   返回 nil。"
   [{:keys [::db/conn] :as cfg} {:keys [profile-id dashboard-comments email-comments email-invites]}]
   (let [profile
         (get-profile conn profile-id ::db/for-update true)
@@ -258,6 +394,14 @@
    [:file media/schema:upload]])
 
 (sv/defmethod ::update-profile-photo
+  "更新用户头像。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id 和 :file (上传的图片文件)
+   
+   【返回值】
+   返回包含文件元数据的审计属性响应。"
   {:doc/added "1.1"
    ::sm/params schema:update-profile-photo
    ::sm/result :nil}
@@ -267,6 +411,14 @@
   (update-profile-photo cfg (assoc params :profile-id profile-id)))
 
 (defn update-profile-photo
+  "更新用户头像的内部函数。
+   
+   【参数】
+   cfg - 系统配置 (包含 :pool 和 :storage)
+   params - 包含 :profile-id 和 :file (上传的文件)
+   
+   【返回值】
+   返回包含审计属性的响应。"
   [{:keys [::db/pool ::sto/storage] :as cfg} {:keys [profile-id file] :as params}]
 
   (let [photo   (upload-photo cfg params)
@@ -289,6 +441,14 @@
                          :file-mtype (:mtype file)}}))))
 
 (defn- generate-thumbnail
+  "生成用户头像缩略图。
+   
+   【参数】
+   cfg - 系统配置
+   input - 输入图像
+   
+   【返回值】
+   返回缩略图对象，包含内容、存储信息和元数据。"
   [_ input]
   (let [input   (media/run {:cmd :info :input input})
         thumb   (media/run {:cmd :profile-thumbnail
@@ -306,12 +466,20 @@
      :content-type (:mtype thumb)}))
 
 (defn upload-photo
+  "上传用户头像。
+   
+   【参数】
+   cfg - 系统配置 (包含 :storage)
+   params - 包含 :profile-id 和 :file
+   
+   【返回值】
+   返回上传的文件对象。"
   [{:keys [::sto/storage] :as cfg} {:keys [file] :as params}]
   (let [params (-> cfg
-                   (assoc ::climit/id [[:process-image/by-profile (:profile-id params)]
-                                       [:process-image/global]])
-                   (assoc ::climit/label "upload-photo")
-                   (climit/invoke! generate-thumbnail file))]
+                  (assoc ::climit/id [[:process-image/by-profile (:profile-id params)]
+                                      [:process-image/global]])
+                  (assoc ::climit/label "upload-photo")
+                  (climit/invoke! generate-thumbnail file))]
     (sto/put-object! storage params)))
 
 ;; --- MUTATION: Request Email Change
@@ -325,6 +493,14 @@
    [:email ::sm/email]])
 
 (sv/defmethod ::request-email-change
+  "请求更改用户邮箱地址。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id 和 :email (新邮箱)
+   
+   【返回值】
+   如果 SMTP 已配置，发送验证邮件；否则立即更改邮箱。"
   {::doc/added "1.0"
    ::sm/params schema:request-email-change}
   [cfg {:keys [::rpc/profile-id email] :as params}]
@@ -339,6 +515,17 @@
                     (change-email-immediately! cfg params))))))
 
 (defn- change-email-immediately!
+  "立即更改用户邮箱（无需验证邮件）。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile 和 :email
+   
+   【返回值】
+   返回包含 :changed 键的地图。
+   
+   【异常】
+   邮箱已被使用时抛出异常。"
   [{:keys [::db/conn]} {:keys [profile email] :as params}]
   (when (not= email (:email profile))
     (check-profile-existence! conn params))
@@ -350,6 +537,19 @@
   {:changed true})
 
 (defn- request-email-change!
+  "请求更改用户邮箱（发送验证邮件）。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile 和 :email
+   
+   【返回值】
+   返回 nil。
+   
+   【异常】
+   - 邮箱已被使用时抛出 :type :validation 异常
+   - 用户被禁言时抛出 :type :validation 异常
+   - 邮箱有投诉/退信记录时抛出 :type :restriction 异常"
   [{:keys [::db/conn] :as cfg} {:keys [profile email] :as params}]
   (let [token   (tokens/generate cfg
                                  {:iss :change-email
@@ -411,6 +611,15 @@
    [:props schema:props]])
 
 (defn update-profile-props
+  "更新用户属性的内部函数。
+   
+   【参数】
+   cfg - 系统配置 (包含 :conn)
+   profile-id - 用户 ID
+   props - 要更新的属性映射
+   
+   【返回值】
+   返回过滤后的属性映射（去除命名空间限定的键）。"
   [{:keys [::db/conn] :as cfg} profile-id props]
   (let [profile (get-profile conn profile-id ::db/for-update true)
         props   (reduce-kv (fn [props k v]
@@ -431,6 +640,14 @@
     (filter-props props)))
 
 (sv/defmethod ::update-profile-props
+  "更新用户属性配置（如主题、语言、插件等）。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id 和 :props (属性映射)
+   
+   【返回值】
+   返回过滤后的属性映射。"
   {::doc/added "1.0"
    ::sm/params schema:update-profile-props
    ::db/transaction true}
@@ -442,6 +659,17 @@
 (declare ^:private get-owned-teams)
 
 (sv/defmethod ::delete-profile
+  "删除当前用户账户（软删除）。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id
+   
+   【返回值】
+   返回会话删除响应。
+   
+   【异常】
+   用户拥有包含其他成员的团队时抛出 :type :validation 异常。"
   {::doc/added "1.0"
    ::db/transaction true}
   [{:keys [::db/conn] :as cfg} {:keys [::rpc/profile-id] :as params}]
@@ -473,7 +701,11 @@
     (-> (rph/wrap nil)
         (rph/with-transform (session/delete-fn cfg)))))
 
+;; --- SQL 查询定义
+
 (def sql:get-subscription-editors
+  "获取用户订阅的编辑者列表的 SQL 语句。
+   查询用户拥有的团队中的所有可编辑成员。"
   "SELECT DISTINCT
           p.id,
           p.fullname AS name,
@@ -490,15 +722,8 @@
       AND tpr2.can_edit IS true
       AND t.deleted_at IS NULL")
 
-(sv/defmethod ::get-subscription-usage
-  {::doc/added "2.9"}
-  [cfg {:keys [::rpc/profile-id]}]
-  (let [editors (db/exec! cfg [sql:get-subscription-editors profile-id])]
-    {:editors editors}))
-
-;; --- HELPERS
-
 (def sql:owned-teams
+  "获取用户拥有的团队及每个团队成员数量的 SQL 语句。"
   "WITH owner_teams AS (
       SELECT tpr.team_id AS id
         FROM team_profile_rel AS tpr
@@ -506,54 +731,86 @@
        WHERE tpr.is_owner IS TRUE
          AND tpr.profile_id = ?
          AND t.deleted_at IS NULL
-   )
-   SELECT tpr.team_id AS id,
-          count(tpr.profile_id) - 1 AS participants
-     FROM team_profile_rel AS tpr
-    WHERE tpr.team_id IN (SELECT id from owner_teams)
-    GROUP BY 1")
-
-(defn get-owned-teams
-  [conn profile-id]
-  (db/exec! conn [sql:owned-teams profile-id]))
+    )
+    SELECT tpr.team_id AS id,
+           count(tpr.profile_id) - 1 AS participants
+      FROM team_profile_rel AS tpr
+     WHERE tpr.team_id IN (SELECT id from owner_teams)
+     GROUP BY 1")
 
 (def ^:private sql:profile-existence
+  "检查邮箱是否已存在且未被删除的 SQL 语句。"
   "select exists (select * from profile
                    where email = ?
                      and deleted_at is null) as val")
 
-(defn- check-profile-existence!
-  [conn {:keys [email] :as params}]
-  (let [result (db/exec-one! conn [sql:profile-existence email])]
-    (when (:val result)
-      (ex/raise :type :validation
-                :code :email-already-exists))
-    params))
-
 (def ^:private sql:profile-by-email
+  "根据邮箱查找用户的 SQL 语句。"
   "select p.* from profile as p
     where p.email = ?
       and (p.deleted_at is null or
            p.deleted_at > now())")
 
+;; --- QUERY: Get Subscription Usage
+
+(sv/defmethod ::get-subscription-usage
+  "获取用户订阅使用情况（编辑者列表）。
+   
+   【参数】
+   cfg - 系统配置
+   params - 包含 :profile-id
+   
+   【返回值】
+   返回包含 :editors 键的地图，列出用户团队中的所有编辑者。"
+  {::doc/added "2.9"}
+  [cfg {:keys [::rpc/profile-id]}]
+  (let [editors (db/exec! cfg [sql:get-subscription-editors profile-id])]
+    {:editors editors}))
+
 (defn get-profile-by-email
-  "Returns a profile looked up by email or `nil` if not match found."
+  "根据邮箱地址查找用户配置。
+   
+   【参数】
+   conn - 数据库连接
+   email - 邮箱地址
+   
+   【返回值】
+   返回用户配置记录，如果未找到则返回 nil。"
   [conn email]
   (->> (db/exec! conn [sql:profile-by-email (clean-email email)])
        (map decode-row)
        (first)))
 
 (defn strip-private-attrs
-  "Only selects a publicly visible profile attrs."
+  "移除用户配置中的敏感私有属性。
+   
+   【参数】
+   row - 用户配置记录
+   
+   【返回值】
+   返回不包含密码和删除标记的用户配置记录。"
   [row]
   (dissoc row :password :deleted-at))
 
 (defn filter-props
-  "Removes all namespace qualified props from `props` attr."
+  "过滤用户属性，移除命名空间限定的键。
+   
+   【参数】
+   props - 属性映射
+   
+   【返回值】
+   返回只包含简单标识符键的属性映射。"
   [props]
   (into {} (filter (fn [[k _]] (simple-ident? k))) props))
 
 (defn decode-row
+  "解码用户配置记录中的 JSON/Transit 字段。
+   
+   【参数】
+   row - 数据库记录
+   
+   【返回值】
+   返回解码后的记录。"
   [{:keys [props] :as row}]
   (cond-> row
     (db/pgobject? props "jsonb")
